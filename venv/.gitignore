@@ -1,0 +1,14 @@
+# Entorno Virtual (¡No subir nunca!)
+venv/
+env/
+
+# Variables de entorno y Claves Secretas (¡Seguridad Crítica!)
+.env
+
+# Archivos compilados de Python (Basura automática)
+__pycache__/
+*.pyc
+
+# Archivos de sistema (Opcional, por si usas Mac o Windows)
+.DS_Store
+Thumbs.db
