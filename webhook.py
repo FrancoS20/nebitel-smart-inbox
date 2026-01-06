@@ -1,6 +1,7 @@
 import os
 import logging
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from mensajeria import enviar_mensaje_whatsapp
@@ -10,7 +11,7 @@ load_dotenv()
 TOKEN_VERIFICACION = os.getenv("META_VERIFY_TOKEN")
 DB_URL = os.getenv("DATABASE_URL")
 
-# Configurar Logs (Para ver mensajes en la pantalla negra)
+# Configurar Logs
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -23,56 +24,52 @@ app = FastAPI()
 async def home():
     return {"status": "Nebitel Smart Inbox V2 Activo 🚀"}
 
-# 1. VERIFICACIÓN DE META (El saludo inicial)
+# 1. VERIFICACIÓN DE META
 @app.get("/webhook")
 async def verify_webhook(request: Request):
     params = request.query_params
     if params.get("hub.mode") == "subscribe" and params.get("hub.verify_token") == TOKEN_VERIFICACION:
-        logger.info("✅ Verificación de Webhook exitosa")
-        return int(params.get("hub.challenge"))
-    logger.error("❌ Falló la verificación del token")
+        logger.info("✅ Meta golpeó la puerta y la clave es correcta.")
+        challenge = params.get("hub.challenge")
+        return PlainTextResponse(content=challenge, status_code=200)
+    
+    logger.error("❌ Clave incorrecta o intento de acceso no autorizado")
     raise HTTPException(status_code=403, detail="Token inválido")
 
-# 2. RECEPCIÓN DE MENSAJES (La magia)
+# 2. RECEPCIÓN DE MENSAJES
 @app.post("/webhook")
 async def receive_message(request: Request):
     data = await request.json()
     
     try:
-        # Navegamos el JSON que manda Facebook
-        entry = data["entry"][0]
-        changes = entry["changes"][0]
-        value = changes["value"]
+        entry = data.get("entry", [])[0]
+        changes = entry.get("changes", [])[0]
+        value = changes.get("value", {})
         
-        # ¿Es un mensaje nuevo?
         if "messages" in value:
             message_data = value["messages"][0]
             contact_data = value["contacts"][0]
             
-            # --- DATOS DEL CLIENTE ---
-            client_id = contact_data["wa_id"]           # Teléfono (Ej: 549343...)
-            name = contact_data["profile"]["name"]      # Nombre (Ej: Franco)
+            # Datos del remitente
+            client_id = contact_data["wa_id"]           
+            name = contact_data["profile"]["name"]      
             platform = "whatsapp"
-            
             sender_type = 'user'
             
-            # --- DATOS DEL MENSAJE ---
+            # Datos del mensaje
             msg_type = message_data.get("type")
             text_body = ""
-            media_url = None
             
-            # Extraer contenido según el tipo
             if msg_type == "text":
                 text_body = message_data["text"]["body"]
             else:
                 text_body = f"[{msg_type.upper()}] Archivo recibido"
-                # (Aquí a futuro procesaremos la URL de la imagen)
 
-            logger.info(f"📩 Mensaje de {name}: {text_body}")
+            logger.info(f"📩 Mensaje de {name} ({client_id}): {text_body}")
 
-            # --- GUARDAR EN BASE DE DATOS OMNICANAL ---
+            # --- GUARDAR EN BASE DE DATOS ---
             with engine.connect() as connection:
-                # A. Guardamos al Contacto (Si ya existe, actualizamos la fecha)
+                # A. Guardar Contacto
                 sql_contact = text("""
                     INSERT INTO contacts (client_id, name, platform, last_activity)
                     VALUES (:id, :name, :plat, NOW())
@@ -81,25 +78,32 @@ async def receive_message(request: Request):
                 """)
                 connection.execute(sql_contact, {"id": client_id, "name": name, "plat": platform})
                 
-                # B. Guardamos el Mensaje (Con las columnas nuevas)
+                # B. Guardar Mensaje Entrante
                 sql_msg = text("""
                     INSERT INTO messages (contact_id, message_text, media_type, direction, sender_type, status)
                     VALUES (:id, :body, :type, 'inbound', 'user', 'received')
                 """)
                 connection.execute(sql_msg, {"id": client_id, "body": text_body, "type": msg_type})
-                
-                connection.commit() # Confirmar guardado
+                connection.commit()
                 logger.info("💾 Guardado correctamente en DB Nueva.")
-                # --- 🤖 RESPUESTA AUTOMÁTICA (MODO PRUEBA) ---
-                # Por ahora, repetimos lo que dijo el usuario para probar que "habla"
-                if sender_type == 'user': # Solo respondemos si nos habla un humano, no a nosotros mismos
+                
+                # --- 🤖 RESPUESTA AUTOMÁTICA ---
+                if sender_type == 'user': 
                     logger.info("🗣️ Nebitel intentando responder...")
                     respuesta = f"🤖 Recibí tu mensaje: '{text_body}'. (Guardado en DB)"
                 
-                    # Llamamos a la función asíncrona (await es clave)
-                    await enviar_mensaje_whatsapp(client_id, respuesta)
+                    # === PARCHE ARGENTINA (AQUÍ ESTÁ LA MAGIA) ===
+                    # Si el número empieza con 549, le sacamos el 9 para engañar a Meta
+                    destinatario_final = client_id
+                    if client_id.startswith("549"):
+                        destinatario_final = client_id.replace("549", "54", 1)
+                        logger.info(f"🇦🇷 Parche activado: Cambiando {client_id} por {destinatario_final}")
+                    # ============================================
+
+                    # Enviamos al destinatario corregido
+                    await enviar_mensaje_whatsapp(destinatario_final, respuesta)
                     
-                    # Guardamos nuestra respuesta en la base de datos también
+                    # Guardamos la respuesta
                     sql_outbound = text("""
                         INSERT INTO messages (contact_id, message_text, direction, sender_type, status)
                         VALUES (:id, :body, 'outbound', 'bot', 'sent')
@@ -109,13 +113,7 @@ async def receive_message(request: Request):
                     logger.info("💾 Respuesta del Bot guardada en DB.")
 
     except Exception as e:
-        logger.error(f"⚠️ Error procesando: {e}")
-        pass # No le decimos a Meta que falló para que no nos bloquee
+        logger.exception(f"⚠️ Error procesando mensaje: {e}")
+        return {"status": "error_handled"}
 
     return {"status": "received"}
-
-# --- ARRANQUE DEL SERVIDOR ---
-if __name__ == "__main__":
-    import uvicorn
-    print("🚀 Iniciando servidor Nebitel...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
