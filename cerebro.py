@@ -1,44 +1,83 @@
-import os
-from dotenv import load_dotenv
-from google import genai
+# cerebro.py
 
-# 1. Cargar clave
-load_dotenv()
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
-
-def analizar_prioridad(mensaje_cliente):
+def procesar_mensaje(texto_usuario):
     """
-    Usa Gemini 2.0 Flash Lite para clasificar mensajes.
+    Recibe el texto del usuario y decide qué responder.
+    Retorna el texto de la respuesta.
     """
-    print(f"🧠 Gemini pensando... Analizando: '{mensaje_cliente}'")
+    mensaje = texto_usuario.lower().strip()
     
-    prompt = f"""
-    Actúa como clasificador para Nebitel. Asigna prioridad 0-100.
+    # --- TEXTOS PREDEFINIDOS ---
+    texto_menu = (
+        "👋 ¡Hola! Bienvenido a NEBITEL Tecnología.\n\n"
+        "¿Qué estás buscando hoy?\n"
+        "1️⃣ *Productos* (iPhone, Gaming, Accesorios)\n"
+        "2️⃣ *Servicio Técnico* (Reparaciones)\n"
+        "3️⃣ *Ubicación y Horarios*\n\n"
+        "👉 Escribí tu consulta o el número de opción."
+    )
+
+    texto_ventas = (
+        "🛒 *Zona de Ventas:*\n\n"
+        "Tenemos lo último en:\n"
+        "📱 *Apple:* iPhones, Apple Watch, AirPods.\n"
+        "🎮 *Gaming:* Consolas, Joysticks, Teclados.\n"
+        "🎧 *Audio y Accesorios:* Parlantes, Fundas, Cargadores.\n\n"
+        "📌 Mirá el catálogo completo y precios en:\n"
+        "👉 www.nebitel.com.ar\n\n"
+        "Si buscás algo puntual (ej: 'Precio iPhone 13'), escribilo acá."
+    )
+
+    texto_tecnico = (
+        "🛠️ *Servicio Técnico Especializado:*\n\n"
+        "Reparamos iPhone, iPad, Apple Watch y más.\n"
+        "Realizamos cambios de módulo, batería, pin de carga, etc.\n\n"
+        "📍 Para un presupuesto estimado, decime:\n"
+        "¿Qué equipo es y qué falla tiene?\n"
+        "*(Ej: iPhone 11 no carga)*"
+    )
+
+    texto_info = (
+        "📍 *Ubicación y Horarios:*\n\n"
+        "🏠 Estamos en [TU DIRECCION REAL].\n"
+        "⏰ Horarios: Lunes a Sábados de [HORA] a [HORA].\n\n"
+        "¡Te esperamos en el local!"
+    )
     
-    CRITERIOS:
-    - 0-20: Saludos, irrelevante.
-    - 21-50: Ventas, consultas.
-    - 51-80: Reclamos técnicos leves.
-    - 81-100: URGENCIAS, cortes totales, furia.
+    # --- PALABRAS CLAVE ---
+    keywords_tecnico = [
+        "reparar", "arreglo", "arreglar", "cambio", "cambiar", "modulo", "pantalla", 
+        "bateria", "pin", "carga", "roto", "servicio", "tecnico", "no anda", "falla", "mojado"
+    ]
+    
+    keywords_ventas = [
+        "precio", "comprar", "valor", "costo", "info", "modelo", "stock",
+        "iphone", "samsung", "celular", "movil",
+        "play", "ps4", "ps5", "xbox", "nintendo", "consola", "joystick", "gamer", "teclado", "mouse",
+        "reloj", "watch", "smartwatch", "airpods", "auricular", "parlante", "funda", "cargador", "cable"
+    ]
 
-    MENSAJE: "{mensaje_cliente}"
-    RESPONDÉ SOLO EL NÚMERO.
-    """
+    keywords_info = ["donde", "ubicacion", "direccion", "calle", "horario", "abierto", "cerrado", "local"]
+    keywords_humano = ["humano", "asesor", "vendedor", "persona", "atame", "hablar"]
 
-    try:
-        # AQUI ESTÁ EL CAMBIO: Usamos el modelo que VIMOS en tu lista
-        response = client.models.generate_content(
-            model="gemini-2.0-flash-lite", 
-            contents=prompt
-        )
-        return int(response.text.strip())
+    # --- LÓGICA DE DECISIÓN ---
+    
+    # 1. Técnico
+    if any(x in mensaje for x in keywords_tecnico):
+        return texto_tecnico
 
-    except Exception as e:
-        print(f"❌ Error Gemini: {e}")
-        # Si falla por cuota, devolvemos 50 para seguir probando
-        return 50
+    # 2. Ventas
+    elif any(x in mensaje for x in keywords_ventas):
+        return texto_ventas
 
-# --- PRUEBA FINAL ---
-if __name__ == "__main__":
-    print(f"Test Tranquilo: {analizar_prioridad('Hola, precio?')}")
-    print(f"Test Furia: {analizar_prioridad('CORTARON TODO, LOS VOY A DENUNCIAR!')}")
+    # 3. Info
+    elif any(x in mensaje for x in keywords_info):
+        return texto_info
+
+    # 4. Humano
+    elif any(x in mensaje for x in keywords_humano):
+        return "👤 ¡Dale! Ya le aviso a un vendedor para que siga tu consulta. Aguardá unos minutos..."
+
+    # 5. Default
+    else:
+        return texto_menu
