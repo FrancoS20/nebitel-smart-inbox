@@ -19,135 +19,191 @@ ia_activa = False
 try:
     if API_KEY:
         genai.configure(api_key=API_KEY)
-        # Usamos flash por velocidad y eficiencia
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        # ⚠️ Modelo Gemini 2.5 Flash
+        model = genai.GenerativeModel('gemini-2.5-flash') 
         ia_activa = True
-        logger.info("✅ Cerebro IA conectado y listo (Con Memoria Temporal).")
+        logger.info("✅ Cerebro IA conectado (Identidad: Nebitel Paraná).")
     else:
         logger.warning("⚠️ No se encontró GEMINI_API_KEY. Usando modo Manual.")
 except Exception as e:
     logger.error(f"❌ Error al iniciar la IA: {e}")
 
-# --- CEREBRO DE RESPALDO (Reglas fijas) ---
+# --- CEREBRO DE RESPALDO (Plan B - Reglas Fijas) ---
 def respuesta_basada_en_reglas(texto_usuario):
     """
-    Plan B: Se activa si la IA falla o no está configurada.
+    Se activa si la IA falla o explota. 
+    Devuelve un DICCIONARIO para no romper el webhook.
     """
     mensaje = texto_usuario.lower().strip()
     
-    texto_menu = "👋 ¡Hola! Bienvenido a NEBITEL.\n1️⃣ Ventas\n2️⃣ Técnico\n3️⃣ Ubicación"
-    texto_ventas = "🛒 Para precios y stock, podés ver todo en www.nebitel.com.ar"
-    texto_tecnico = "🛠️ Para cotizar una reparación, por favor decime: ¿Qué modelo es y qué falla tiene?"
-    texto_info = "📍 Estamos en Zona Centro. Horarios: Lun a Sab de 9 a 20hs."
+    # Textos predefinidos con tus direcciones exactas
+    texto_ventas = "🛒 Para precios y stock, podés ver todo actualizado en www.nebitel.com.ar"
+    texto_tecnico = "🛠️ Para cotizar una reparación, decime: ¿Qué modelo es y qué falla tiene?"
+    texto_info = "📍 Estamos en Paraná: Santa Fe 27, Av. P. Zanni 1597 de 8:30 a 12:30hs / 16:30 a 20:30hs y Shopping Paso del Paraná 10 a 21hs (Horario Corrrido)."
+    texto_default = "👋 ¡Hola! Bienvenido a NEBITEL. En breve te atiende un humano."
+
+    respuesta_final = texto_default
+    intencion = "General"
+    prioridad = 5
 
     if any(x in mensaje for x in ["reparar", "arreglo", "roto", "falla", "2"]):
-        return texto_tecnico
-    elif any(x in mensaje for x in ["precio", "comprar", "iphone", "stock", "1"]):
-        return texto_ventas
+        respuesta_final = texto_tecnico
+        intencion = "Tecnico"
+        prioridad = 6
+    elif any(x in mensaje for x in ["precio", "comprar", "iphone", "stock", "1", "valor", "sale"]):
+        respuesta_final = texto_ventas
+        intencion = "Venta"
+        prioridad = 5
     elif any(x in mensaje for x in ["donde", "ubicacion", "horario", "3"]):
-        return texto_info
-    elif "humano" in mensaje:
-        return "👤 Ya aviso a un vendedor para que te atienda."
-    else:
-        return texto_menu
+        respuesta_final = texto_info
+        intencion = "Info"
+        prioridad = 2
 
-# --- CEREBRO PRINCIPAL (IA + Contexto) ---
+    return {
+        "respuesta": respuesta_final,
+        "prioridad": prioridad,
+        "intencion": intencion,
+        "status": "open"
+    }
+
+# --- CEREBRO PRINCIPAL (IA + Contexto + JSON) ---
 def procesar_mensaje(texto_usuario, historial_previo=[]):
     """
-    Función principal inteligente.
-    Args:
-        texto_usuario (str): El mensaje nuevo que acaba de llegar.
-        historial_previo (list): Lista de dicts con la conversación anterior.
+    Función principal inteligente con identidad de Paraná y salida Estructurada.
     """
     global ia_activa
     
-    # 1. ANÁLISIS TEMPORAL 
-    instruccion_saludo = "✅ Podés saludar cortésmente (Hola, Buen día) si corresponde."
+    # 1. ANÁLISIS TEMPORAL (¿Debo saludar?) ⏳
+    instruccion_saludo = "✅ Podés saludar cortésmente (Hola, Buen día)."
     tiempo_texto = "Desconocido"
 
     if historial_previo:
         ultimo_mensaje = historial_previo[-1]
-        
         if 'timestamp' in ultimo_mensaje and ultimo_mensaje['timestamp']:
             try:
                 hora_ultimo = ultimo_mensaje['timestamp']
-                
-                # CORRECCIÓN DE ZONA HORARIA 🌍
-                # Si la fecha de la DB viene sin zona (naive), asumimos que es UTC
+                # Corrección Zona Horaria (UTC)
                 if hora_ultimo.tzinfo is None:
                     hora_ultimo = hora_ultimo.replace(tzinfo=timezone.utc)
-                
-                # Obtenemos la hora actual TAMBIÉN en UTC
                 ahora_utc = datetime.now(timezone.utc)
                 
-                # Ahora restamos peras con peras (UTC con UTC)
                 diferencia = ahora_utc - hora_ultimo
                 minutos = int(diferencia.total_seconds() / 60)
-                
-                # Si sale negativo (por milisegundos), lo ponemos en 0
                 if minutos < 0: minutos = 0
-                
                 tiempo_texto = f"{minutos} minutos"
 
-                # REGLA DE LOS 15 MINUTOS
+                # Regla de fluidez (15 mins)
                 if minutos < 15:
-                    instruccion_saludo = "⛔️ PROHIBIDO SALUDAR (Hola, Buen día, etc). La conversación es fluida y reciente. Respondé directo al grano."
+                    instruccion_saludo = "⛔️ PROHIBIDO SALUDAR (Hola, Buen día). La charla es fluida. Andá al grano."
                 else:
-                    instruccion_saludo = "✅ Pasó un tiempo, podés saludar de nuevo si es necesario."
-                    
+                    instruccion_saludo = "✅ Pasó un tiempo, podés saludar de nuevo."
             except Exception as e:
                 logger.warning(f"⚠️ No se pudo calcular tiempo: {e}")
 
-    # CASO A: Usar IA
+    # 2. IA CON LÓGICA DE NEGOCIO Y ESTRUCTURA JSON 🧠
     if ia_activa:
         try:
-            logger.info(f"🤖 IA Pensando... Contexto: {len(historial_previo)} msgs previos. Tiempo: {tiempo_texto}")
-            
             fecha_hoy = datetime.now().strftime("%d/%m/%Y %H:%M")
             
-            # Formatear el historial como guion
+            # Formatear historial
             guion_chat = ""
             if historial_previo:
                 for msg in historial_previo:
                     nombre = "Cliente" if msg['role'] == 'user' else "Nebitel"
-                    # Limpiamos saltos de línea extra
                     contenido = str(msg['content']).replace('\n', ' ')
                     guion_chat += f"- {nombre}: {contenido}\n"
-            else:
-                guion_chat = "(Sin mensajes previos)"
 
-            # EL PROMPT DE SISTEMA
+            # --- PROMPT MAESTRO ---
             prompt_sistema = f"""
-            Sos el asistente virtual de NEBITEL (Rosario, Argentina). Hoy es {fecha_hoy}.
-            Tu objetivo es clasificar la consulta y dar una respuesta útil y corta.
+            ROL: Sos un asistente de ventas de NEBITEL (Tienda de tecnología en PARANÁ, Entre Ríos).
+            Tu misión es responder con naturalidad Y clasificar el mensaje internamente en formato JSON.
             
-            CONTEXTO DE TIEMPO:
-            - Último mensaje previo hace: {tiempo_texto}.
-            - INSTRUCCIÓN DE SALUDO: {instruccion_saludo}
+            UBICACIONES REALES:
+            - Centro: Santa Fe 27 (Horario: 8:30 a 12:30 / 16:30 a 20:30).
+            - Zanni: Av. P. Zanni 1597 (Horario: 8:30 a 12:30 / 16:30 a 20:30).
+            - Shopping: Shopping Paso del Paraná (Horario corrido 10 a 21hs).
             
-            HISTORIAL DE CONVERSACIÓN:
+            PERSONALIDAD:
+            - Sos un paranaense más. Hablás natural, usás "vos".
+            - Tono: Amigable ("dale", "fijate", "capaz", "chiflá").
+            - Emojis: Moderados.
+            
+            REGLAS DE ORO (NEGOCIO):
+            1. PRECIOS: NO des precios fijos. Decí: "Los precios varían, fijate los actualizados en la web: www.nebitel.com.ar".
+            2. TÉCNICA: Si dicen "se me rompió", preguntá MODELO y FALLA.
+            3. PLAN CANJE (PRIORIDAD ALTA):
+               - SI tomamos usados (iPhone).
+               - RESPUESTA: "Sisi, tomamos usados! 📱 Decime modelo, gigas y batería así le paso el dato a un vendedor humano para que te lo cotice."
+               - NO cotices vos. Derivá.
+            
+            CRITERIOS DE CLASIFICACIÓN (JSON):
+            - Prioridad 10: Venta cerrada, Urgencia técnica.
+            - Prioridad 8: Plan Canje, Stock específico.
+            - Prioridad 5: Precios generales.
+            - Prioridad 1: Saludos finales.
+            
+            CONTEXTO:
+            - Fecha: {fecha_hoy}. Tiempo inactivo: {tiempo_texto}.
+            - Saludo: {instruccion_saludo}
+            
+            EJEMPLOS DE RESPUESTA (Output JSON):
+            
+            Caso 1: Venta (Precios)
+            Usuario: "precio del iphone 15?"
+            JSON: {{
+                "respuesta": "Hola! 👋 Mirá, los precios cambian seguido por el dólar. Te conviene fijarte en la web www.nebitel.com.ar que está todo actualizado.",
+                "intencion": "Venta",
+                "prioridad": 5,
+                "status": "open"
+            }}
+            
+            Caso 2: Técnico
+            Usuario: "no me carga el pin"
+            JSON: {{
+                "respuesta": "Uh, qué macana. 😕 ¿Qué modelo es el equipo? Así le consulto a los chicos del taller.",
+                "intencion": "Tecnico",
+                "prioridad": 6,
+                "status": "open"
+            }}
+
+            Caso 3: Plan Canje (Lead Calificado)
+            Usuario: "toman usados en parte de pago?"
+            JSON: {{
+                "respuesta": "Sisi, tomamos! 📱 Decime qué modelo es, cuántos gigas tiene y cómo está de batería, así le paso el dato a un vendedor para que te lo cotice ya.",
+                "intencion": "Plan Canje",
+                "prioridad": 8,
+                "status": "open"
+            }}
+            
+            Caso 4: Cierre
+            Usuario: "gracias capo"
+            JSON: {{
+                "respuesta": "De nada! Cualquier cosa chiflá. 😉",
+                "intencion": "Cierre",
+                "prioridad": 1,
+                "status": "closed"
+            }}
+
+            INPUT REAL:
             {guion_chat}
+            Cliente: "{texto_usuario}"
             
-            MENSAJE NUEVO DEL CLIENTE:
-            "{texto_usuario}"
-            
-            TUS REGLAS:
-            1. NO inventes precios. Mandá a www.nebitel.com.ar.
-            2. Si es Servicio Técnico, pedí Modelo y Falla.
-            3. Si el cliente sigue el hilo (ej: "¿y en negro?"), usá el historial para saber de qué habla.
-            4. Respondé en UNA sola frase amigable (máx 40 palabras).
-            
-            Respuesta:
+            OUTPUT OBLIGATORIO (JSON PURO):
             """
             
             # Generar respuesta
             response = model.generate_content(prompt_sistema)
-            return response.text.strip()
+            
+            # Limpiar JSON (quitar ```json y ```)
+            texto_limpio = response.text.replace("```json", "").replace("```", "").strip()
+            
+            return json.loads(texto_limpio)
 
         except Exception as e:
-            logger.error(f"🚨 Falló la IA (Error: {e}). Usando reglas fijas.")
+            logger.error(f"🚨 Falló la IA o el JSON (Error: {e}). Usando reglas fijas.")
+            # Si falla la IA, usamos el Plan B que ahora devuelve diccionario
             return respuesta_basada_en_reglas(texto_usuario)
             
-    # CASO B: Sin IA
+    # Caso Sin IA (Modo Manual)
     else:
         return respuesta_basada_en_reglas(texto_usuario)

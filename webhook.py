@@ -6,41 +6,38 @@ from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-#  IMPORTAMOS TU CEREBRO 
-import cerebro  
+# Importamos nuestro cerebro inteligente (ahora devuelve JSON)
+import cerebro 
 
-# Configuración Inicial
+# --- CONFIGURACIÓN ---
 load_dotenv()
-app = FastAPI()
 
-# Configuración de Logs
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Variables de Entorno
-TOKEN = os.getenv("META_TOKEN")
+# Credenciales y Tokens
 VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN")
+META_TOKEN = os.getenv("META_TOKEN")
 PHONE_NUMBER_ID = os.getenv("META_PHONE_ID")
 DB_URL = os.getenv("DATABASE_URL")
 
-# Configuración del Engine de Base de Datos (Neon Tech / PostgreSQL)
-# Configuramos el pool para manejar desconexiones en serverless
-try:
-    engine = create_engine(
-        DB_URL,
-        pool_size=5,
-        max_overflow=10,
-        pool_recycle=1800
-    )
-    logger.info("✅ Engine de Base de Datos configurado correctamente")
-except Exception as e:
-    logger.critical(f"❌ Error fatal configurando DB: {e}")
+# Configuración de Logs (Para ver colores en la terminal)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("webhook")
 
-#  FUNCIÓN AUXILIAR PARA ENVIAR WHATSAPP 
+app = FastAPI()
+
+# Conexión a Base de Datos
+if not DB_URL:
+    logger.error("❌ Falta DATABASE_URL en el archivo .env")
+    exit()
+engine = create_engine(DB_URL)
+
+# --- FUNCIÓN: ENVIAR MENSAJE A META ---
 async def enviar_mensaje_whatsapp(numero, texto):
     url = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
     headers = {
-        "Authorization": f"Bearer {TOKEN}",
+        "Authorization": f"Bearer {META_TOKEN}",
         "Content-Type": "application/json"
     }
     data = {
@@ -49,148 +46,140 @@ async def enviar_mensaje_whatsapp(numero, texto):
         "type": "text",
         "text": {"body": texto}
     }
+    
     try:
         response = requests.post(url, headers=headers, json=data)
-        if response.status_code == 200:
-            logger.info(f"📤 Mensaje enviado a {numero}")
-        else:
-            logger.error(f"⚠️ Error enviando mensaje a Meta: {response.text}")
-    except Exception as e:
-        logger.error(f"❌ Falló la petición HTTP de envío: {e}")
+        response.raise_for_status()
+        logger.info(f"📤 Mensaje enviado a {numero}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"⚠️ Error enviando mensaje a Meta: {e}")
+        if response is not None:
+             logger.error(f"Detalle Meta: {response.text}")
 
-# RUTA 1: VERIFICACIÓN (GET) 
+# --- RUTAS DEL SERVIDOR ---
+
+@app.get("/")
+async def root():
+    return {"status": "Nebitel Bot Activo 🦅", "mode": "JSON Architecture"}
+
 @app.get("/webhook")
 async def verify_webhook(request: Request):
-    """Verificación de Meta"""
-    mode = request.query_params.get("hub.mode")
-    token = request.query_params.get("META_VERIFY_TOKEN") 
-    challenge = request.query_params.get("hub.challenge")
+    """Verificación inicial de Meta"""
+    hub_mode = request.query_params.get("hub.mode")
+    hub_verify_token = request.query_params.get("hub.verify_token")
+    hub_challenge = request.query_params.get("hub.challenge")
 
-    # Nota: Meta suele enviar 'hub.verify_token', revisar si .env usa META_VERIFY_TOKEN
-    verify_token_env = os.getenv("META_VERIFY_TOKEN")
+    if hub_mode == "subscribe" and hub_verify_token == VERIFY_TOKEN:
+        logger.info("✅ Webhook verificado correctamente.")
+        return int(hub_challenge)
+    
+    raise HTTPException(status_code=403, detail="Token inválido")
 
-    if mode and token:
-        if mode == "subscribe" and token == verify_token_env:
-            logger.info("✅ Webhook verificado.")
-            return int(challenge)
-        else:
-            raise HTTPException(status_code=403, detail="Token de verificación incorrecto")
-    return {"status": "error", "message": "Faltan parámetros"}
-
-# RUTA 2: RECEPCIÓN DE MENSAJES (POST)
 @app.post("/webhook")
 async def receive_message(request: Request):
-    """Recepción y Procesamiento de Mensajes"""
+    """
+    Núcleo del sistema: Recibe -> Guarda -> Piensa -> Clasifica -> Responde -> Guarda
+    """
     try:
-        body = await request.json()
+        data = await request.json()
         
-        # Navegamos el JSON de WhatsApp
-        entry = body.get("entry", [])[0]
-        changes = entry.get("changes", [])[0]
-        value = changes.get("value", {})
-        messages = value.get("messages", [])
+        # Estructura típica de mensaje de WhatsApp
+        entry = data.get('entry', [])[0]
+        changes = entry.get('changes', [])[0]
+        value = changes.get('value', {})
+        messages = value.get('messages', [])
 
         if messages:
             msg = messages[0]
+            wa_number = msg['from']     # Número del cliente
+            text_body = msg['text']['body'] # Texto que escribió
             
-            # Datos del remitente
-            wa_number = msg.get("from")
-            name = value.get("contacts", [{}])[0].get("profile", {}).get("name", "Cliente")
-            msg_type = msg.get("type")
-            
-            # Extraemos contenido
-            text_body = ""
-            if msg_type == "text":
-                text_body = msg.get("text", {}).get("body", "")
-            else:
-                text_body = f"[{msg_type} recibido - Multimedia no soportado aún]"
-            
-            logger.info(f"📩 Mensaje de {name} ({wa_number}): {text_body}")
+            logger.info(f"📩 Mensaje de {wa_number}: {text_body}")
 
-            # --- INICIO BLOQUE DE BASE DE DATOS ---
+            # 1. GUARDAR MENSAJE ENTRANTE (INBOUND)
             try:
                 with engine.connect() as conn:
+                    # Nos aseguramos que el contacto exista (Upsert simple)
+                    conn.execute(text("""
+                        INSERT INTO contacts (client_id, name, created_at) 
+                        VALUES (:uid, 'Cliente Nuevo', CURRENT_TIMESTAMP)
+                        ON CONFLICT (client_id) DO NOTHING
+                    """), {"uid": wa_number})
                     
-                    # 1. Upsert Contacto (Asegurar que existe el usuario)
-                    sql_contact = text("""
-                        INSERT INTO contacts (client_id, name, platform, last_activity) 
-                        VALUES (:uid, :name, 'whatsapp', CURRENT_TIMESTAMP)
-                        ON CONFLICT (client_id) DO UPDATE 
-                        SET name = :name, last_activity = CURRENT_TIMESTAMP
-                    """)
-                    conn.execute(sql_contact, {"uid": wa_number, "name": name})
-                    
-                    # 2. LEER HISTORIAL (¡ANTES de guardar el nuevo!) ⏳
-                    # Esto es clave para la MEMORIA TEMPORAL.
-                    # Traemos 'created_at' para calcular tiempos.
-                    sql_history = text("""
+                    # Guardamos el mensaje del usuario
+                    conn.execute(text("""
+                        INSERT INTO messages (contact_id, message_text, direction, sender_type, status, created_at)
+                        VALUES (:uid, :body, 'inbound', 'user', 'received', CURRENT_TIMESTAMP)
+                    """), {"uid": wa_number, "body": text_body})
+                    conn.commit()
+            except Exception as e:
+                logger.error(f"❌ Error DB (Entrante): {e}")
+
+            # 2. RECUPERAR HISTORIAL (MEMORIA)
+            historial_chat = []
+            try:
+                with engine.connect() as conn:
+                    result = conn.execute(text("""
                         SELECT sender_type, message_text, created_at 
                         FROM messages 
                         WHERE contact_id = :uid 
-                        ORDER BY id DESC 
-                        LIMIT 6
-                    """)
-                    history_result = conn.execute(sql_history, {"uid": wa_number}).fetchall()
+                        ORDER BY id DESC LIMIT 6
+                    """), {"uid": wa_number})
                     
-                    # Formateamos historial para el Cerebro
-                    historial_chat = []
-                    for row in history_result:
-                        role = "assistant" if row[0] == 'bot' else "user"
-                        content = row[1]
-                        fecha = row[2] # Timestamp real de la base de datos
-                        
+                    # Convertimos a formato para la IA (orden cronológico)
+                    msgs_db = result.fetchall()
+                    for fila in reversed(msgs_db):
+                        role = "user" if fila[0] == 'user' else "model"
                         historial_chat.append({
                             "role": role, 
-                            "content": content, 
-                            "timestamp": fecha
+                            "content": fila[1],
+                            "timestamp": fila[2] # Guardamos la fecha para el cálculo de tiempo
                         })
-                    
-                    # Lo damos vuelta para que sea cronológico (Viejo -> Nuevo)
-                    historial_chat = historial_chat[::-1] 
-                    
-                    # 3. AHORA SÍ: Guardar el Mensaje Nuevo (Inbound) 💾
-                    sql_msg_in = text("""
-                        INSERT INTO messages (contact_id, message_text, direction, sender_type, status)
-                        VALUES (:uid, :body, 'inbound', 'user', 'received')
-                    """)
-                    conn.execute(sql_msg_in, {"uid": wa_number, "body": text_body})
-                    
-                    # Confirmamos la escritura en DB
-                    conn.commit()
+            except Exception as e:
+                logger.error(f"⚠️ Error leyendo historial: {e}")
+
+            # 3. CEREBRO TOMA EL CONTROL 🧠 (Ahora devuelve JSON)
+            resultado_ia = cerebro.procesar_mensaje(text_body, historial_chat)
             
-            except Exception as db_err:
-                logger.error(f"❌ Error en Base de Datos: {db_err}")
-                historial_chat = [] # Si falla la DB, seguimos sin memoria
+            # 4. DESEMPAQUETAR DATOS
+            # Usamos .get() para evitar errores si algo falta
+            respuesta_texto = resultado_ia.get("respuesta", "Disculpá, tuve un error interno.")
+            intencion = resultado_ia.get("intencion", "General")
+            prioridad = resultado_ia.get("prioridad", 5)
+            estado_charla = resultado_ia.get("status", "open")
 
-            # --- FIN BLOQUE DB ---
+            logger.info(f"🤖 IA Responde: {respuesta_texto[:30]}... | Intención: {intencion} | Prio: {prioridad}")
 
-            # --- CEREBRO TOMA EL CONTROL 🧠 ---
-            # Le pasamos el texto nuevo Y el historial (que NO incluye el texto nuevo todavía en la lista)
-            # Esto permite comparar tiempos correctamente.
-            respuesta_bot = cerebro.procesar_mensaje(text_body, historial_chat)
-
-            # PARCHE ARGENTINA 🇦🇷
-            destinatario_final = wa_number
+            # 5. PARCHE ARGENTINA (Para enviar)
+            destinatario = wa_number
             if wa_number.startswith("549"):
-                destinatario_final = wa_number.replace("549", "54", 1)
+                destinatario = wa_number.replace("549", "54", 1)
 
-            # ENVIAR RESPUESTA A WHATSAPP
-            await enviar_mensaje_whatsapp(destinatario_final, respuesta_bot)
+            # 6. ENVIAR SOLO TEXTO A WHATSAPP
+            await enviar_mensaje_whatsapp(destinatario, respuesta_texto)
 
-            # GUARDAR RESPUESTA DEL BOT (Outbound)
+            # 7. GUARDAR RESPUESTA Y METADATOS EN DB (OUTBOUND)
             try:
                 with engine.connect() as conn:
-                    sql_msg_out = text("""
-                        INSERT INTO messages (contact_id, message_text, direction, sender_type, status)
-                        VALUES (:uid, :body, 'outbound', 'bot', 'sent')
+                    # Aquí guardamos los datos nuevos: intent, priority_score, conversation_status
+                    sql_out = text("""
+                        INSERT INTO messages 
+                        (contact_id, message_text, direction, sender_type, status, priority_score, intent, conversation_status, created_at)
+                        VALUES (:uid, :body, 'outbound', 'bot', 'sent', :prio, :intent, :estado, CURRENT_TIMESTAMP)
                     """)
-                    conn.execute(sql_msg_out, {"uid": wa_number, "body": respuesta_bot})
+                    conn.execute(sql_out, {
+                        "uid": wa_number, 
+                        "body": respuesta_texto,
+                        "prio": prioridad,
+                        "intent": intencion,
+                        "estado": estado_charla
+                    })
                     conn.commit()
             except Exception as e:
-                logger.error(f"❌ Error guardando respuesta del bot: {e}")
-            
-        return {"status": "ok"}
+                logger.error(f"❌ Error guardando respuesta IA: {e}")
+
+        return {"status": "received"}
 
     except Exception as e:
-        logger.error(f"❌ Error procesando webhook general: {e}")
-        return {"status": "ok"}
+        logger.error(f"🔥 Error crítico en Webhook: {e}")
+        return {"status": "error", "detail": str(e)}
