@@ -1,271 +1,201 @@
 import streamlit as st
 import pandas as pd
 import os
+import requests
+import time
 import streamlit.components.v1 as components
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(
-    page_title="Nebitel CRM",
-    page_icon="🦅",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Nebitel CRM", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
 
-# --- 2. ESTILOS CSS (CORREGIDOS) ---
+load_dotenv()
+DB_URL = os.getenv("DATABASE_URL")
+META_TOKEN = os.getenv("META_TOKEN")
+META_PHONE_ID = os.getenv("META_PHONE_ID")
+engine = create_engine(DB_URL)
+
+# --- 2. CSS (UI KIT) ---
 st.markdown("""
 <style>
-    /* 1. FONDO Y SIDEBAR */
     .stApp { background-color: #0e1117; }
-    [data-testid="stSidebar"] { background-color: #1a1a1a; border-right: 1px solid #333; }
-
-    /* 2. ESPACIADO SUPERIOR (EL ARREGLO CLAVE) */
-    /* Antes era 1rem y se escondía detrás del menú. Ahora 3.5rem es el punto dulce. */
-    .block-container {
-        padding-top: 3.5rem !important; 
-        padding-bottom: 1rem !important;
-        padding-left: 2rem !important;
-        padding-right: 2rem !important;
-        max-width: 100% !important;
-    }
+    .block-container { padding-top: 3rem !important; padding-bottom: 5rem !important; }
     
-    /* 3. BURBUJAS DE CHAT */
-    .chat-bubble { padding: 8px 12px; border-radius: 8px; margin-bottom: 5px; max-width: 85%; font-size: 14px; line-height: 1.4; }
+    /* Burbujas */
+    .chat-bubble { padding: 8px 12px; border-radius: 8px; margin-bottom: 5px; max-width: 80%; font-size: 14px; position: relative; }
     .user-bubble { background-color: #005c4b; color: white; margin-left: auto; border-top-right-radius: 0; }
     .bot-bubble { background-color: #202c33; color: white; margin-right: auto; border-top-left-radius: 0; }
-    .meta-info { font-size: 0.65rem; color: rgba(255,255,255,0.5); text-align: right; margin-top: 2px; display: block; }
+    .human-bubble { background-color: #007bff; color: white; margin-left: auto; border-top-right-radius: 0; border: 1px solid #0056b3; }
     
-    /* 4. BOTONES GENÉRICOS */
-    div.stButton > button {
-        width: 100%;
-        border-radius: 6px;
-        border: 1px solid #333;
-        background-color: #1e1e1e;
-        color: #e0e0e0;
-        text-align: left;
-        padding: 10px;
-        transition: all 0.2s;
-    }
-    div.stButton > button:hover {
-        border-color: #00a884;
-        background-color: #2a2a2a;
-    }
-
-    /* 5. HEADER DEL CHAT (Ajustado para que se vea bien el número) */
-    .chat-header {
-        font-size: 1.2rem;
-        font-weight: 600;
-        color: white;
-        margin: 0;
-        padding-top: 2px; /* Alineación fina con el botón */
-    }
+    .meta-info { font-size: 0.65rem; color: rgba(255,255,255,0.5); text-align: right; margin-top: 4px; display: block; }
     
-    /* 6. TÍTULO COMPACTO */
-    .compact-title {
-        font-size: 1.4rem;
-        font-weight: 600;
-        margin-bottom: 0.5rem;
-        color: white;
-    }
+    /* Botones y Tarjetas */
+    div.stButton > button { width: 100%; text-align: left; background-color: #1e1e1e; border: 1px solid #333; color: #e0e0e0; }
+    div.stButton > button:hover { border-color: #00a884; background-color: #2a2a2a; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. GESTIÓN DE ESTADO ---
-if 'selected_client' not in st.session_state:
-    st.session_state.selected_client = None
-if 'view_category' not in st.session_state:
-    st.session_state.view_category = "all"
+# --- 3. FUNCIONES DE BACKEND ---
 
-# --- 4. BASE DE DATOS ---
-load_dotenv()
-DB_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DB_URL)
-
-# --- 5. FUNCIONES ---
-
-def ir_al_chat(client_id):
-    st.session_state.selected_client = client_id
-
-def volver_al_tablero():
-    st.session_state.selected_client = None
-    st.rerun()
-
-def cambiar_filtro(categoria):
-    st.session_state.view_category = categoria
-
-def get_data_dashboard():
+def enviar_whatsapp(telefono, texto):
+    if not META_TOKEN: return False
+    destinatario = telefono.replace("549", "54", 1) if telefono.startswith("549") else telefono
+    url = f"https://graph.facebook.com/v21.0/{META_PHONE_ID}/messages"
+    headers = {"Authorization": f"Bearer {META_TOKEN}", "Content-Type": "application/json"}
     try:
-        sql = text("""
-            SELECT 
-                contact_id, 
-                MAX(created_at) as last_msg, 
-                MAX(priority_score) as max_prio,
-                (SELECT intent FROM messages m2 WHERE m2.contact_id = messages.contact_id ORDER BY id DESC LIMIT 1) as intent,
-                (SELECT message_text FROM messages m3 WHERE m3.contact_id = messages.contact_id ORDER BY id DESC LIMIT 1) as last_text
-            FROM messages 
-            GROUP BY contact_id 
-            ORDER BY max_prio DESC, last_msg DESC 
-        """)
-        with engine.connect() as conn:
-            return pd.read_sql(sql, conn)
-    except Exception:
-        return pd.DataFrame()
+        res = requests.post(url, headers=headers, json={"messaging_product": "whatsapp", "to": destinatario, "type": "text", "text": {"body": texto}})
+        if res.status_code == 200:
+            with engine.connect() as conn:
+                conn.execute(text("INSERT INTO messages (contact_id, message_text, direction, status, intent, priority_score, created_at) VALUES (:cel, :msg, 'outbound', 'sent_by_human', 'Human Reply', 0, NOW())"), {"cel": telefono, "msg": texto})
+                conn.execute(text("UPDATE contacts SET bot_mode = FALSE WHERE client_id = :cel"), {"cel": telefono})
+                conn.commit()
+            return True
+        return False
+    except: return False
 
-def clasificar_categoria(row):
-    intent = str(row['intent'])
-    prio = row['max_prio']
-    if intent in ['Plan Canje', 'Precio', 'Stock', 'Compra'] or prio >= 8:
-        return 'ventas'
-    elif intent in ['Tecnico', 'Reparación', 'Garantía']:
-        return 'tecnico'
-    else:
-        return 'varios'
-
-# --- 6. FRAGMENTO DE CHAT ---
-@st.fragment(run_every=4)
-def render_chat_window(client_id):
-    
-    # HEADER (Ahora con columnas más anchas para que no se corte el botón)
-    # [1, 15] le da suficiente espacio al botón para no cortarse
-    c1, c2 = st.columns([1, 15]) 
-    
-    with c1:
-        if st.button("⬅", help="Volver", key="btn_back_chat", use_container_width=True):
-            volver_al_tablero()
-    with c2:
-        # El número debería aparecer ahora porque bajamos el padding general
-        st.markdown(f'<p class="chat-header">💬 {client_id}</p>', unsafe_allow_html=True)
-    
-    st.markdown("<hr style='margin-top: 0.5rem; margin-bottom: 0.5rem; border-color: #333;'>", unsafe_allow_html=True)
-
+def switch_bot_status(client_id, nuevo_estado):
     try:
-        sql = text("SELECT * FROM messages WHERE contact_id = :uid ORDER BY created_at ASC")
         with engine.connect() as conn:
-            df = pd.read_sql(sql, conn, params={"uid": client_id})
-    except:
-        df = pd.DataFrame()
+            conn.execute(text("UPDATE contacts SET bot_mode = :modo WHERE client_id = :id"), {"modo": nuevo_estado, "id": client_id})
+            conn.commit()
+        st.toast(f"Bot {'ACTIVADO 🟢' if nuevo_estado else 'APAGADO 🔴'}")
+    except: pass
 
-    # Altura ajustada a 650 para asegurar que entre en laptops sin scroll doble
-    container_height = 650 
-    
-    with st.container(height=container_height):
+# --- 4. GESTIÓN DE VISTAS ---
+if 'selected_client' not in st.session_state: st.session_state.selected_client = None
+if 'view_category' not in st.session_state: st.session_state.view_category = "all"
+
+def ir_al_chat(cid): st.session_state.selected_client = cid
+def volver(): st.session_state.selected_client = None; st.rerun()
+
+# --- 5. COMPONENTES VIVOS (FRAGMENTS) ---
+
+# A. EL CHAT EN VIVO (Se actualiza solo cada 2 segundos SIN tocar el input)
+@st.fragment(run_every=2)
+def bloque_mensajes(client_id):
+    # Consulta rápida
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(text("SELECT * FROM messages WHERE contact_id = :uid ORDER BY created_at ASC"), conn, params={"uid": client_id})
+    except: df = pd.DataFrame()
+
+    with st.container(height=520):
         if df.empty:
-            st.info("Inicio.")
+            st.info("No hay mensajes aún.")
         else:
             for _, row in df.iterrows():
-                hora = row['created_at'].strftime('%H:%M')
-                if row['direction'] == 'outbound':
-                    st.markdown(f"""
-                    <div class="chat-bubble user-bubble">
-                        {row['message_text']}
-                        <span class="meta-info">🦅 {hora}</span>
-                    </div>""", unsafe_allow_html=True)
-                else:
-                    st.markdown(f"""
-                    <div class="chat-bubble bot-bubble">
-                        {row['message_text']}
-                        <span class="meta-info">👤 {hora}</span>
-                    </div>""", unsafe_allow_html=True)
+                h = row['created_at'].strftime('%H:%M')
+                d, s = row['direction'], row['status']
+                
+                # Lógica de colores
+                if d == 'inbound': cls, ico = "user-bubble", "🦅" # Cliente
+                elif s == 'sent_by_human': cls, ico = "human-bubble", "👨‍💻" # Vos
+                else: cls, ico = "bot-bubble", "👤" # Bot
+                
+                st.markdown(f'<div class="chat-bubble {cls}">{row["message_text"]}<span class="meta-info">{ico} {h}</span></div>', unsafe_allow_html=True)
             
-            # Script Scroll
-            js = f"""
-            <script>
-                function scrollDown() {{
-                    const scrollers = window.parent.document.querySelectorAll('.stVerticalBlockBorderWrapper');
-                    if (scrollers.length > 0) {{
-                        const chat = scrollers[scrollers.length - 1];
-                        chat.scrollTop = chat.scrollHeight;
-                    }}
-                }}
-                scrollDown();
-                setTimeout(scrollDown, 100);
-            </script>
-            """
-            components.html(js, height=0)
+            # JS Scroll (Solo se ejecuta si hay mensajes nuevos)
+            components.html("<script>var c=window.parent.document.querySelectorAll('.stVerticalBlockBorderWrapper'); if(c.length>0){var l=c[c.length-1];l.scrollTop=l.scrollHeight;}</script>", height=0)
 
-    st.text_input("Responder...", placeholder="Escribí aquí...", disabled=True, key="fake_input", label_visibility="collapsed")
+# B. EL TABLERO EN VIVO (Se actualiza cada 5 segundos)
+@st.fragment(run_every=5)
+def bloque_tablero():
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(text("""
+                SELECT contact_id, MAX(created_at) as last_msg, MAX(priority_score) as max_prio,
+                (SELECT message_text FROM messages m3 WHERE m3.contact_id = messages.contact_id ORDER BY id DESC LIMIT 1) as last_text,
+                (SELECT intent FROM messages m2 WHERE m2.contact_id = messages.contact_id ORDER BY id DESC LIMIT 1) as intent
+                FROM messages GROUP BY contact_id ORDER BY last_msg DESC
+            """), conn)
+    except: df = pd.DataFrame()
 
-# --- 7. SIDEBAR ---
-df_data = get_data_dashboard()
+    if df.empty:
+        st.info("Esperando mensajes... (Auto-Sync Activo)")
+        return
 
-with st.sidebar:
-    st.markdown('<p class="compact-title">🦅 Nebitel CRM</p>', unsafe_allow_html=True)
+    # Categorización
+    df['cat'] = df.apply(lambda r: 'ventas' if (str(r['intent']) in ['Plan Canje','Precio','Stock'] or r['max_prio']>=8) else ('tecnico' if str(r['intent']) in ['Tecnico','Reparación'] else 'varios'), axis=1)
+
+    # Render Columnas
+    cols = st.columns(3)
+    titulos = ["🔥 Ventas", "🛠️ Técnico", "❓ Varios"]
+    keys = ['ventas','tecnico','varios']
     
-    c_ref, c_home = st.columns(2)
-    with c_ref:
-        if st.button("🔄 Refrescar", use_container_width=True): st.rerun()
-    with c_home:
-        if st.button("🏠 Inicio", use_container_width=True): volver_al_tablero()
+    # Usamos session_state global para el filtro (se mantiene entre refrescos)
+    vista = st.session_state.view_category
     
-    st.caption("Filtros Rápidos")
-    if st.button(f"🔥 Ventas ({len(df_data[df_data.apply(clasificar_categoria, axis=1)=='ventas']) if not df_data.empty else 0})", use_container_width=True):
-        st.session_state.view_category = 'ventas'
-        st.session_state.selected_client = None
-        st.rerun()
-        
-    st.caption("Recientes")
-    if not df_data.empty:
-        for _, row in df_data.head(5).iterrows():
-            lbl = f"{'🔥' if row['max_prio']>=8 else '👤'} {row['contact_id'][-4:]}..."
-            if st.button(lbl, key=f"s_{row['contact_id']}", use_container_width=True):
-                ir_al_chat(row['contact_id'])
-                st.rerun()
+    if vista == 'all':
+        for i in range(3):
+            with cols[i]:
+                st.markdown(f"##### {titulos[i]}")
+                for _, r in df[df['cat']==keys[i]].iterrows():
+                    # Usamos un callback para evitar recargas innecesarias
+                    if st.button(f"{r['contact_id']}\n\n_{r['last_text'][:30]}..._", key=f"k_{r['contact_id']}"):
+                        ir_al_chat(r['contact_id'])
+                        st.rerun()
+    else:
+        # Vista filtrada
+        st.caption(f"Filtrado por: {vista.upper()}")
+        df_f = df[df['cat'] == vista]
+        cx = st.columns(3)
+        for i, (_, r) in enumerate(df_f.iterrows()):
+            with cx[i%3]:
+                if st.button(f"{r['contact_id']}\n\n_{r['last_text'][:30]}..._", key=f"f_{r['contact_id']}"):
+                    ir_al_chat(r['contact_id'])
+                    st.rerun()
 
-# --- 8. LÓGICA PRINCIPAL ---
+# --- 6. ESTRUCTURA PRINCIPAL (LAYOUT ESTATICO) ---
 
 if st.session_state.selected_client:
-    render_chat_window(st.session_state.selected_client)
+    # --- VISTA CHAT ---
+    client_id = st.session_state.selected_client
+    
+    # 1. Header (Estático)
+    with engine.connect() as conn:
+        bot_on = conn.execute(text("SELECT bot_mode FROM contacts WHERE client_id=:id"), {"id":client_id}).scalar()
+        if bot_on is None: bot_on = True
+
+    c1, c2, c3 = st.columns([1, 10, 3])
+    with c1: 
+        if st.button("⬅", help="Volver"): volver()
+    with c2: st.markdown(f"**💬 {client_id}**")
+    with c3:
+        # Toggle Bot (Con lógica de actualización manual para no romper el flujo)
+        nuevo_estado = st.toggle("🤖 Bot", value=bot_on, key=f"tg_{client_id}")
+        if nuevo_estado != bot_on:
+            switch_bot_status(client_id, nuevo_estado)
+            time.sleep(0.2)
+            st.rerun()
+
+    st.divider()
+
+    # 2. Bloque de Mensajes (AUTO-ACTUALIZABLE EN SEGUNDO PLANO)
+    bloque_mensajes(client_id)
+
+    # 3. Input de Escritura (ESTÁTICO - No se recarga solo)
+    texto = st.chat_input(f"Escribir a {client_id}...")
+    if texto:
+        if enviar_whatsapp(client_id, texto):
+            st.rerun() # Acá sí forzamos update para ver nuestro propio mensaje al instante
+
 else:
-    # VISTA TABLERO
-    # Este título debería ser visible ahora
-    st.markdown('<p class="compact-title">📊 Panel de Control</p>', unsafe_allow_html=True)
+    # --- VISTA DASHBOARD ---
+    st.markdown("### 📊 Panel de Control")
+    
+    # Filtros (Estáticos)
+    cf = st.columns(4)
+    for i, (k, l) in enumerate(zip(['all','ventas','tecnico','varios'], ['Todo','Ventas','Tec','Varios'])):
+        if cf[i].button(l, type="primary" if st.session_state.view_category==k else "secondary"):
+            st.session_state.view_category = k; st.rerun()
+    
+    st.divider()
+    
+    # Tablero (AUTO-ACTUALIZABLE)
+    bloque_tablero()
 
-    if df_data.empty:
-        st.info("Sin mensajes.")
-    else:
-        df_data['categoria'] = df_data.apply(clasificar_categoria, axis=1)
-        
-        f1, f2, f3, f4 = st.columns(4)
-        if f1.button("👁️ Todo", use_container_width=True, type="primary" if st.session_state.view_category=='all' else "secondary"):
-            cambiar_filtro('all')
-            st.rerun()
-        if f2.button("💰 Ventas", use_container_width=True, type="primary" if st.session_state.view_category=='ventas' else "secondary"):
-            cambiar_filtro('ventas')
-            st.rerun()
-        if f3.button("🛠️ Tec", use_container_width=True, type="primary" if st.session_state.view_category=='tecnico' else "secondary"):
-            cambiar_filtro('tecnico')
-            st.rerun()
-        if f4.button("❓ Varios", use_container_width=True, type="primary" if st.session_state.view_category=='varios' else "secondary"):
-            cambiar_filtro('varios')
-            st.rerun()
-            
-        st.markdown("<hr style='margin: 1rem 0; border-color: #333;'>", unsafe_allow_html=True)
-
-        def dibujar_tarjeta(row):
-            prio_icon = "🔥" if row['max_prio'] >= 8 else "👤"
-            card_label = f"{prio_icon} {row['contact_id']}\n_{row['last_text'][:40]}..._" 
-            
-            if st.button(card_label, key=f"c_{row['contact_id']}", use_container_width=True):
-                ir_al_chat(row['contact_id'])
-                st.rerun()
-
-        view = st.session_state.view_category
-        
-        if view == 'all':
-            c_ventas, c_tec, c_varios = st.columns(3)
-            with c_ventas:
-                st.markdown("##### 🔥 Ventas")
-                for _, row in df_data[df_data['categoria'] == 'ventas'].iterrows(): dibujar_tarjeta(row)
-            with c_tec:
-                st.markdown("##### 🛠️ Técnico")
-                for _, row in df_data[df_data['categoria'] == 'tecnico'].iterrows(): dibujar_tarjeta(row)
-            with c_varios:
-                st.markdown("##### ❓ Varios")
-                for _, row in df_data[df_data['categoria'] == 'varios'].iterrows(): dibujar_tarjeta(row)
-        else:
-            st.markdown(f"##### {view.upper()}")
-            df_filtrada = df_data[df_data['categoria'] == view]
-            cols = st.columns(2)
-            for index, row in df_filtrada.iterrows():
-                with cols[index % 2]: dibujar_tarjeta(row)
+# Sidebar fija
+with st.sidebar:
+    st.markdown("### 🦅 Nebitel CRM")
+    if st.button("🏠 Inicio", use_container_width=True): volver()
