@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
-# --- CONFIGURACIÓN INICIAL ---
+#  CONFIGURACIÓN INICIAL 
 load_dotenv()
 
 # Configuración de Logs
@@ -19,7 +19,7 @@ ia_activa = False
 try:
     if API_KEY:
         genai.configure(api_key=API_KEY)
-        # ⚠️ Modelo Gemini 2.5 Flash
+        #  Modelo Gemini 2.5 Flash
         model = genai.GenerativeModel('gemini-2.5-flash') 
         ia_activa = True
         logger.info("✅ Cerebro IA conectado (Identidad: Nebitel Paraná).")
@@ -28,7 +28,7 @@ try:
 except Exception as e:
     logger.error(f"❌ Error al iniciar la IA: {e}")
 
-# --- CEREBRO DE RESPALDO (Plan B - Reglas Fijas) ---
+# CEREBRO DE RESPALDO (Plan B - Reglas Fijas)
 def respuesta_basada_en_reglas(texto_usuario):
     """
     Se activa si la IA falla o explota. 
@@ -36,7 +36,7 @@ def respuesta_basada_en_reglas(texto_usuario):
     """
     mensaje = texto_usuario.lower().strip()
     
-    # Textos predefinidos con tus direcciones exactas
+    # Textos predefinidos con las direcciones exactas
     texto_ventas = "🛒 Para precios y stock, podés ver todo actualizado en www.nebitel.com.ar"
     texto_tecnico = "🛠️ Para cotizar una reparación, decime: ¿Qué modelo es y qué falla tiene?"
     texto_info = "📍 Estamos en Paraná: Santa Fe 27, Av. P. Zanni 1597 de 8:30 a 12:30hs / 16:30 a 20:30hs y Shopping Paso del Paraná 10 a 21hs (Horario Corrrido)."
@@ -66,14 +66,14 @@ def respuesta_basada_en_reglas(texto_usuario):
         "status": "open"
     }
 
-# --- CEREBRO PRINCIPAL (IA + Contexto + JSON) ---
+#  CEREBRO PRINCIPAL (IA + Contexto + JSON) 
 def procesar_mensaje(texto_usuario, historial_previo=[]):
     """
     Función principal inteligente con identidad de Paraná y salida Estructurada.
     """
     global ia_activa
     
-    # 1. ANÁLISIS TEMPORAL (¿Debo saludar?) ⏳
+    # ANÁLISIS TEMPORAL 
     instruccion_saludo = "✅ Podés saludar cortésmente (Hola, Buen día)."
     tiempo_texto = "Desconocido"
 
@@ -100,7 +100,7 @@ def procesar_mensaje(texto_usuario, historial_previo=[]):
             except Exception as e:
                 logger.warning(f"⚠️ No se pudo calcular tiempo: {e}")
 
-    # 2. IA CON LÓGICA DE NEGOCIO Y ESTRUCTURA JSON 🧠
+    # IA CON LÓGICA DE NEGOCIO Y ESTRUCTURA JSON 
     if ia_activa:
         try:
             fecha_hoy = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -113,7 +113,7 @@ def procesar_mensaje(texto_usuario, historial_previo=[]):
                     contenido = str(msg['content']).replace('\n', ' ')
                     guion_chat += f"- {nombre}: {contenido}\n"
 
-            # --- PROMPT MAESTRO ---
+            # PROMPT MAESTRO
             prompt_sistema = f"""
             ROL: Sos un asistente de ventas de NEBITEL (Tienda de tecnología en PARANÁ, Entre Ríos).
             Tu misión es responder con naturalidad Y clasificar el mensaje internamente en formato JSON.
@@ -201,7 +201,7 @@ def procesar_mensaje(texto_usuario, historial_previo=[]):
 
         except Exception as e:
             logger.error(f"🚨 Falló la IA o el JSON (Error: {e}). Usando reglas fijas.")
-            # Si falla la IA, usamos el Plan B que ahora devuelve diccionario
+            # Si falla la IA, se usa el Plan B que ahora devuelve diccionario
             return respuesta_basada_en_reglas(texto_usuario)
             
     # Caso Sin IA (Modo Manual)
