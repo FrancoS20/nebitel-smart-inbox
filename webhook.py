@@ -58,17 +58,16 @@ def procesar_notificacion_fondo(data):
 
         logger.info(f"📩 Procesando fondo: {wa_number} dice: {text_body}")
 
-        # 1. GUARDAR ENTRADA
+# 1. GUARDAR ENTRADA (Con Platform 'whatsapp')
         try:
             with engine.connect() as conn:
                 conn.execute(text("""
-                    INSERT INTO contacts (client_id, name, created_at, bot_mode) 
-                    VALUES (:uid, :name, CURRENT_TIMESTAMP, TRUE)
-                    ON CONFLICT (client_id) DO UPDATE SET name = :name
+                    INSERT INTO contacts (client_id, name, created_at, bot_mode, platform) 
+                    VALUES (:uid, :name, CURRENT_TIMESTAMP, TRUE, 'whatsapp')
+                    ON CONFLICT (client_id) DO UPDATE 
+                    SET name = :name, platform = 'whatsapp'
                 """), {"uid": wa_number, "name": contact_name})
                 
-                # Chequeamos duplicados de mensaje para estar seguros (Opcional, pero buena práctica)
-                # Por ahora guardamos directo
                 conn.execute(text("""
                     INSERT INTO messages (contact_id, message_text, direction, sender_type, status, created_at)
                     VALUES (:uid, :body, 'inbound', 'user', 'received', CURRENT_TIMESTAMP)
@@ -78,7 +77,7 @@ def procesar_notificacion_fondo(data):
             logger.error(f"❌ Error DB Inbound: {e}")
             return
 
-        # 2. CHEQUEO BOT MODE
+        # 2. CHEQUEO BOT MODE (Esto está perfecto)
         is_bot_active = True
         try:
             with engine.connect() as conn:
@@ -90,18 +89,31 @@ def procesar_notificacion_fondo(data):
             logger.info(f"🛑 Bot apagado para {wa_number}. Fin.")
             return
 
-        logger.info(f"🟢 Bot activo. Llamando a Gemini...")
+        logger.info(f"🟢 Bot activo. Llamando a Cerebro...")
 
-        # 3. CEREBRO (IA)
+        # 3. CEREBRO (IA) + HISTORIAL CON TIEMPO
         historial = []
         try:
             with engine.connect() as conn:
-                rows = conn.execute(text("SELECT sender_type, message_text FROM messages WHERE contact_id=:uid ORDER BY id DESC LIMIT 6"), {"uid": wa_number}).fetchall()
+                # --- CAMBIO IMPORTANTE ACÁ ABAJO ---
+                # Agregamos 'created_at' a la consulta SQL
+                rows = conn.execute(text("""
+                    SELECT sender_type, message_text, created_at 
+                    FROM messages 
+                    WHERE contact_id=:uid 
+                    ORDER BY id DESC LIMIT 6
+                """), {"uid": wa_number}).fetchall()
+                
                 for r in reversed(rows):
-                    historial.append({"role": "user" if r[0]=='user' else "model", "content": r[1]})
-        except: pass
+                    historial.append({
+                        "role": "user" if r[0]=='user' else "model", 
+                        "content": r[1],
+                        "timestamp": r[2] # <--- ¡ESTO FALTABA! Sin esto no calcula el tiempo.
+                    })
+        except Exception as e: 
+            logger.error(f"⚠️ Error recuperando historial: {e}")
 
-        # LLAMADA A GEMINI (Aquí es donde antes se trababa y Meta reenviaba)
+        # LLAMADA A CEREBRO
         resultado = cerebro.procesar_mensaje(text_body, historial)
         rta = resultado.get("respuesta", "Error")
 
@@ -133,14 +145,10 @@ async def verify_webhook(request: Request):
 
 @app.post("/webhook")
 async def receive_message(request: Request, background_tasks: BackgroundTasks):
-    """
-    ENDPOINT RÁPIDO: Solo recibe, devuelve 200 OK y manda a trabajar al fondo.
-    """
     try:
         data = await request.json()
-        # ¡MAGIA! Agregamos la tarea a la cola y respondemos YA.
         background_tasks.add_task(procesar_notificacion_fondo, data)
-        return {"status": "received"} # Meta recibe esto en milisegundos y se queda feliz.
+        return {"status": "received"}
     except Exception as e:
         logger.error(f"Error recibiendo: {e}")
         return {"status": "error"}
