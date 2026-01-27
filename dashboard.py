@@ -4,7 +4,7 @@ import os
 import requests
 import time
 import pytz 
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import streamlit.components.v1 as components
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
@@ -196,14 +196,17 @@ def bloque_mensajes(client_id):
 def bloque_tablero():
     try:
         with engine.connect() as conn:
-            # Traemos la plataforma y el estado del bot
+
             df = pd.read_sql(text("""
                 SELECT 
                     m.contact_id, 
                     MAX(m.created_at) as last_msg, 
-                    MAX(COALESCE(m.priority_score, 0)) as max_prio,
+                    
+                    -- 👇 EL CAMBIO CLAVE: Miramos la prioridad del ÚLTIMO mensaje, no el máximo histórico
+                    (SELECT priority_score FROM messages m2 WHERE m2.contact_id = m.contact_id ORDER BY id DESC LIMIT 1) as max_prio,
+                    
                     (SELECT message_text FROM messages m3 WHERE m3.contact_id = m.contact_id ORDER BY id DESC LIMIT 1) as last_text,
-                    (SELECT intent FROM messages m2 WHERE m2.contact_id = m.contact_id ORDER BY id DESC LIMIT 1) as intent,
+                    (SELECT intent FROM messages m4 WHERE m4.contact_id = m.contact_id ORDER BY id DESC LIMIT 1) as intent,
                     c.bot_mode,
                     c.platform
                 FROM messages m
@@ -221,17 +224,63 @@ def bloque_tablero():
         st.info("Sin mensajes recientes.")
         return
 
-    # --- HELPERS DE ÍCONOS ---
+    # --- HELPERS ---
     def get_plat_label(plat_raw):
         p = str(plat_raw).lower()
         if 'instagram' in p: return "📸 Insta"
         if 'facebook' in p or 'messenger' in p: return "💬 Msgr"
-        return "📱 WhatsApp" # Por defecto
+        return "📱 WhatsApp"
+
+    # --- LÓGICA DE TIEMPO Y URGENCIA (NUEVO) ---
+# --- LÓGICA DE TIEMPO Y URGENCIA (CORREGIDA) ---
+# --- LÓGICA DE TIEMPO SIMPLE (FIX ZONA HORARIA) ---
+    def calcular_urgencia(row):
+        # 1. Convertimos el dato de la base a datetime
+        mensaje_hora = pd.to_datetime(row['last_msg'])
+        
+        # 2. EL TRUCO MÁGICO: Le borramos la información de zona horaria (tz_localize(None))
+        # Esto hace que quede solo la hora "reloj" (ej: 10:35) sin importar si es UTC o ARG.
+        if mensaje_hora.tzinfo is not None:
+            mensaje_hora = mensaje_hora.tz_localize(None)
+            
+        # 3. Tomamos la hora de tu PC (también sin zona, hora reloj pura)
+        ahora = datetime.now()
+        
+        # 4. Ajuste manual por si la base de datos (Neon) guardó en UTC (+3 horas)
+        # Si ves que te dice "-180 minutos", es porque Neon guarda en UTC.
+        # Si la diferencia es absurda (tipo 3 horas), asumimos corrección.
+        diff = ahora - mensaje_hora
+        minutos = int(diff.total_seconds() / 60)
+        
+        # FIX: Si Neon guarda en UTC (3 hs adelantado), el mensaje parece del futuro o muy viejo.
+        # Si el mensaje es "del futuro" o tiene una diferencia de 3 horas exactas (180 min), ajustamos.
+        # Probemos primero la resta directa. Si en tu dashboard sigue diciendo "2h" o "3h", 
+        # significa que tenemos que restar 3 horas a la hora de la DB.
+        
+        # Si la diferencia es mayor a 2 horas Y menor a 4 horas apenas mandás el mensaje, 
+        # es un error de zona horaria (UTC vs GMT-3). Lo corregimos restando 180 min.
+        if 170 < minutos < 190: 
+            minutos = minutos - 180 
+
+        etiqueta_tiempo = ""
+        es_urgente_por_tiempo = False
+        
+        # Solo marcamos urgente si REALMENTE pasó tiempo (ej: más de 2 horas reales)
+        if minutos > 120: 
+            etiqueta_tiempo = f" ⏳ {int(minutos/60)}h"
+            es_urgente_por_tiempo = True
+        elif minutos > 30:
+            etiqueta_tiempo = f" 🕑 {minutos}m"
+        
+        return es_urgente_por_tiempo, etiqueta_tiempo
 
     # --- CLASIFICACIÓN ---
     def clasificar(r):
         intent = str(r['intent'])
-        if intent in ['Plan Canje','Precio','Stock','Compra','Venta'] or r['max_prio'] >= 8:
+        urgente_tiempo, _ = calcular_urgencia(r)
+        
+        # Si tiene prioridad alta O esperó mucho tiempo -> Va a VENTAS/URGENTE
+        if intent in ['Venta','Precio','Stock','Compra'] or r['max_prio'] >= 8 or urgente_tiempo:
             return 'ventas'
         elif intent in ['Tecnico','Reparación','Falla','Soporte']:
             return 'tecnico'
@@ -240,7 +289,7 @@ def bloque_tablero():
     df['cat'] = df.apply(clasificar, axis=1)
     vista = st.session_state.view_category
     
-    # --- VISTA COLUMNAS (KANBAN) ---
+    # --- RENDERIZADO ---
     if vista == 'all':
         cols = st.columns(3)
         titulos = ["🔥 Oportunidades", "🛠️ Soporte", "💬 General"]
@@ -254,32 +303,30 @@ def bloque_tablero():
                 
                 for _, r in sub_df.iterrows():
                     h = formatear_fecha(r['last_msg'])
-                    
-                    # 1. Identificamos la Plataforma
                     plat_label = get_plat_label(r['platform'])
-                    
-                    # 2. Identificamos el Estado del Bot (🟢 o 🔴)
                     bot_icon = "🟢" if r['bot_mode'] else "🔴"
                     
-                    # 3. Armamos la Tarjeta
-                    # Ejemplo: 📱 WhatsApp | **549343...** 🟢
-                    lbl = f"{plat_label} | **{r['contact_id']}** {bot_icon}\n\n_{str(r['last_text'])[:35]}..._\n\n🕒 {h}"
+                    # Calcular alerta de tiempo
+                    es_tarde, label_tiempo = calcular_urgencia(r)
+                    
+                    # Si es tarde, agregamos alerta visual en el título
+                    alerta = "⚠️" if es_tarde else ""
+                    
+                    lbl = f"{plat_label} | **{r['contact_id']}** {bot_icon} {alerta}\n\n_{str(r['last_text'])[:35]}..._\n\n🕒 {h} {label_tiempo}"
 
                     if st.button(lbl, key=f"card_{r['contact_id']}"):
                         ir_al_chat(r['contact_id']); st.rerun()
-    
-    # --- VISTA FILTRO (LISTA) ---
     else:
+        # (Vista filtrada simple)
         st.subheader(f"📂 {vista.upper()}")
         df_show = df[df['cat'] == vista]
         for _, r in df_show.iterrows():
             h = formatear_fecha(r['last_msg'])
-            
+            _, label_tiempo = calcular_urgencia(r)
             plat_label = get_plat_label(r['platform'])
             bot_icon = "🟢" if r['bot_mode'] else "🔴"
             
-            lbl = f"{plat_label} | {r['contact_id']} {bot_icon} | {h}\n\n{r['last_text']}"
-            
+            lbl = f"{plat_label} | {r['contact_id']} {bot_icon} | {h} {label_tiempo}\n\n{r['last_text']}"
             if st.button(lbl, key=f"list_{r['contact_id']}"):
                 ir_al_chat(r['contact_id']); st.rerun()
 
