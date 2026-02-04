@@ -1,57 +1,65 @@
 import os
+from sqlalchemy import create_engine, inspect
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+import pandas as pd
 
-# 1. Configuración inicial
+# 1. Cargar configuración
 load_dotenv()
-engine = create_engine(os.getenv("DATABASE_URL"))
+DB_URL = os.getenv("DATABASE_URL")
 
-def recibir_mensaje_simulado(cliente_id, nombre, plataforma, mensaje, es_multimedia=False):
-    print(f"\n📩 Simulando mensaje entrante de {nombre} ({plataforma})...")
+if not DB_URL:
+    print("❌ Error: No encontré DATABASE_URL en el archivo .env")
+    exit()
+
+# 2. Conectar
+try:
+    engine = create_engine(DB_URL)
+    inspector = inspect(engine)
+    print("✅ Conexión exitosa a la Base de Datos.\n")
+except Exception as e:
+    print(f"❌ Error conectando: {e}")
+    exit()
+
+# 3. Obtener Tablas
+tablas = inspector.get_table_names()
+
+print(f"📊 TABLAS ENCONTRADAS: {len(tablas)}")
+print("="*40)
+
+for tabla in tablas:
+    print(f"\n📂 TABLA: {tabla.upper()}")
+    print("-" * 40)
     
-    with engine.connect() as conn:
-        # PASO A: Asegurar que el contacto existe
-        # Usamos ON CONFLICT DO NOTHING: Si ya existe el ID, no hace nada (no da error).
-        sql_contacto = text("""
-            INSERT INTO contacts (client_id, name, platform)
-            VALUES (:id, :nombre, :plat)
-            ON CONFLICT (client_id) DO NOTHING;
-        """)
-        
-        conn.execute(sql_contacto, {"id": cliente_id, "nombre": nombre, "plat": plataforma})
-        
-        # PASO B: Guardar el mensaje
-        # Fíjate que ponemos priority_score en 50 por defecto (todavía no tenemos IA)
-        tipo_media = "image" if es_multimedia else "text"
-        
-        sql_mensaje = text("""
-            INSERT INTO messages (contact_id, message_text, media_type, priority_score)
-            VALUES (:contact_id, :msg, :media, 50)
-        """)
-        
-        conn.execute(sql_mensaje, {
-            "contact_id": cliente_id, 
-            "msg": mensaje, 
-            "media": tipo_media
+    # Obtener columnas
+    columnas = inspector.get_columns(tabla)
+    
+    # Armar lista linda para mostrar
+    data = []
+    for col in columnas:
+        # Detectar si es Primary Key (aunque inspector no lo da directo en get_columns, lo inferimos visualmente)
+        # O mejor, usamos get_pk_constraint
+        es_pk = ""
+        pk_info = inspector.get_pk_constraint(tabla)
+        if col['name'] in pk_info.get('constrained_columns', []):
+            es_pk = "🔑 PK"
+            
+        # Detectar Foreign Keys
+        es_fk = ""
+        fks = inspector.get_foreign_keys(tabla)
+        for fk in fks:
+            if col['name'] in fk['constrained_columns']:
+                es_fk = f"🔗 FK -> {fk['referred_table']}.{fk['referred_columns'][0]}"
+
+        data.append({
+            "Columna": col['name'],
+            "Tipo": str(col['type']),
+            "Nulo?": "Sí" if col['nullable'] else "No",
+            "Clave": f"{es_pk} {es_fk}".strip()
         })
-        
-        conn.commit() # ¡Guardar cambios!
-        print("✅ Mensaje guardado en la Base de Datos.")
+    
+    # Mostrar con Pandas para que quede alineado perfecto
+    df = pd.DataFrame(data)
+    print(df.to_string(index=False))
+    print("-" * 40)
 
-# --- ZONA DE PRUEBAS ---
-if __name__ == "__main__":
-    # Vamos a simular que entra un mensaje de WhatsApp
-    recibir_mensaje_simulado(
-        cliente_id="54911223344", 
-        nombre="Juan Pérez", 
-        plataforma="whatsapp", 
-        mensaje="Hola, necesito presupuesto para un diseño."
-    )
-
-    # Vamos a simular que entra otro de Instagram
-    recibir_mensaje_simulado(
-        cliente_id="insta_user_123", 
-        nombre="Maria Design", 
-        plataforma="instagram", 
-        mensaje="Buenas, ¿hacen envíos?", 
-    )
+print("\n✅ Fin del reporte.")
