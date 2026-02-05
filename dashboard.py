@@ -179,69 +179,102 @@ def volver(): st.session_state.selected_client = None; st.rerun()
 @st.fragment(run_every=3)
 def bloque_mensajes(client_id):
     try:
-        # 1. Buscamos mensajes unificados (Lógica Terminator)
         s = str(client_id).replace("+", "").strip()
         patron = f"%{s[-7:]}" if len(s) > 7 else s
         
         with engine.connect() as conn:
-            sql = "SELECT * FROM (SELECT * FROM messages WHERE contact_id LIKE :pat ORDER BY created_at DESC LIMIT 50) sub ORDER BY created_at ASC"
+            # 1. Traemos mensajes (DESC para limitar)
+            sql = "SELECT * FROM messages WHERE contact_id LIKE :pat ORDER BY created_at DESC LIMIT 50"
             df = pd.read_sql(text(sql), conn, params={"pat": patron})
             df = normalizar_hora(df)
+            
+            # 2. Ordenamos CRONOLÓGICAMENTE (Viejo -> Nuevo) para leer de arriba a abajo
+            if not df.empty:
+                df = df.sort_values(by='created_at', ascending=True)
+
     except: df = pd.DataFrame()
 
-    # 2. Contenedor del chat con altura fija
-    # IMPORTANTE: height=600 crea una caja con scroll interno.
-    with st.container(height=600):
-        if df.empty:
+    if df.empty:
+        with st.container(height=600):
             st.info("📭 No hay mensajes aún.")
-        else:
-            # Renderizamos todos los mensajes
-            for _, row in df.iterrows():
-                hora_str = formatear_fecha(row['created_at'])
-                d, s = row['direction'], row['status']
-                
-                if d == 'inbound': 
-                    cls, ico, align = "user-bubble", "", "left"
-                elif s == 'sent_by_human' or row['sender_type'] == 'human': 
-                    cls, ico, align = "human-bubble", "👨‍💻", "right"
-                else: 
-                    cls, ico, align = "bot-bubble", "🤖", "right"
-                
-                extra_tag = ""
-                if row['sender_type'] == 'bot' and row.get('intent'):
-                      extra_tag = f"<br><span style='font-size:0.6rem; color:#00bfa5;'>🧠 {row['intent']}</span>"
+        return
 
-                html_code = f'''<div style="display:flex; justify-content:{'flex-end' if align=='right' else 'flex-start'};"><div class="chat-bubble {cls}">{row["message_text"]}{extra_tag}<span class="meta-info">{ico} {hora_str}</span></div></div>'''
-                st.markdown(html_code, unsafe_allow_html=True)
+    # --- 3. CONSTRUCCIÓN DEL MONOLITO (SIN ESPACIOS AL INICIO) ---
+    mensajes_html = ""
+    for _, row in df.iterrows():
+        hora_str = formatear_fecha(row['created_at'])
+        d, s = row['direction'], row['status']
+        
+        if d == 'inbound': 
+            cls, ico, align = "user-bubble", "", "left"
+        elif s == 'sent_by_human' or row['sender_type'] == 'human': 
+            cls, ico, align = "human-bubble", "👨‍💻", "right"
+        else: 
+            cls, ico, align = "bot-bubble", "🤖", "right"
+        
+        extra_tag = ""
+        if row['sender_type'] == 'bot' and row.get('intent'):
+              extra_tag = f"<br><span style='font-size:0.6rem; color:#00bfa5;'>🧠 {row['intent']}</span>"
+
+        # HTML pegado al margen izquierdo
+        mensajes_html += f"""
+<div style="display:flex; justify-content:{'flex-end' if align=='right' else 'flex-start'}; width:100%; margin-bottom: 8px;">
+    <div class="chat-bubble {cls}" style="max-width: 80%;">
+        {row["message_text"]}{extra_tag}
+        <span class="meta-info">{ico} {hora_str}</span>
+    </div>
+</div>"""
+
+    # ID Único para que el Javascript lo encuentre
+    unique_id = "chat-box-monolith"
+    
+    # --- 4. RENDERIZADO VISUAL ---
+    html_final = f"""
+<div id="{unique_id}" style="
+    height: 600px; 
+    overflow-y: auto; 
+    display: flex; 
+    flex-direction: column; 
+    padding: 10px;
+    border: 1px solid #2a3942;
+    border-radius: 8px;
+    background-color: #0e1117;
+">
+    {mensajes_html}
+</div>
+"""
+    st.markdown(html_final, unsafe_allow_html=True)
+
+    # --- 5. EL VIGILANTE (JAVASCRIPT APARTE) ---
+    # Usamos components.html para inyectar el script fuera del markdown.
+    # Este script usa ResizeObserver: detecta cuando el contenido cambia y baja el scroll.
+    js_observer = f"""
+    <script>
+        // Buscamos el chat por su ID
+        var chat = window.parent.document.getElementById("{unique_id}");
+        
+        if (chat) {{
+            // 1. Bajamos inmediatamente
+            chat.scrollTop = chat.scrollHeight;
             
-            # --- 🚀 SCROLL AGRESIVO PARA EL INICIO ---
-            # Este script busca el contenedor de scroll y lo fuerza hacia abajo.
-            # Funciona específicamente con st.container(height=...)
-            js_fuerza_bruta = """
-            <script>
-            function scrollDown() {
-                // Buscamos todos los contenedores con scroll de Streamlit
-                var containers = window.parent.document.querySelectorAll('.stVerticalBlockBorderWrapper');
-                
-                // Normalmente el último contenedor es el del chat (porque está abajo)
-                if (containers.length > 0) {
-                    var chatContainer = containers[containers.length - 1];
-                    // Forzamos el scroll al fondo (scrollHeight)
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
-                }
-            }
-
-            // Ejecutamos ahora mismo
-            scrollDown();
-
-            // Y por las dudas, lo ejecutamos de nuevo en 100ms y 300ms 
-            // para asegurarnos que cargaron las imágenes o fuentes
-            setTimeout(scrollDown, 100);
-            setTimeout(scrollDown, 300);
-            </script>
-            """
-            components.html(js_fuerza_bruta, height=0, width=0)
-
+            // 2. Creamos un Observador
+            // Cada vez que Streamlit cambie el contenido (resize), bajamos de nuevo.
+            var observer = new ResizeObserver(entries => {{
+                for (let entry of entries) {{
+                    chat.scrollTop = chat.scrollHeight;
+                }}
+            }});
+            
+            // Empezamos a vigilar el contenedor y sus hijos
+            observer.observe(chat);
+            for (let child of chat.children) {{
+                observer.observe(child);
+            }}
+        }}
+    </script>
+    """
+    components.html(js_observer, height=0, width=0)
+    
 @st.fragment(run_every=5)
 def bloque_tablero():
     try:
