@@ -1,56 +1,52 @@
-import os
 import requests
-from dotenv import load_dotenv
+import json
 
-# 1. Cargar las credenciales del archivo .env
-load_dotenv()
+# URL de tu webhook (Usamos la local para que sea instantáneo)
+url = "http://127.0.0.1:8000/webhook"
 
-token = os.getenv("META_TOKEN")
-phone_id = os.getenv("META_PHONE_ID")
-recipient_phone = os.getenv("META_RECIPIENT_PHONE")
-
-# Verificamos que todo esté cargado antes de disparar
-if not token or not phone_id or not recipient_phone:
-    print("❌ ERROR: Faltan datos en el archivo .env")
-    print(f"Token: {'OK' if token else 'Falta'}")
-    print(f"Phone ID: {'OK' if phone_id else 'Falta'}")
-    print(f"Recipient: {'OK' if recipient_phone else 'Falta'}")
-    exit()
-
-# 2. Configurar la URL y el Mensaje (Payload)
-url = f"https://graph.facebook.com/v21.0/{phone_id}/messages"
-
-headers = {
-    "Authorization": f"Bearer {token}",
-    "Content-Type": "application/json"
+# --- DATOS DEL "ACTOR" (El usuario falso de Instagram) ---
+payload = {
+    "object": "instagram",
+    "entry": [
+        {
+            "messaging": [
+                {
+                    "sender": {
+                        "id": "123456789_INSTA_USER"  # ID Falso de Instagram
+                    },
+                    "recipient": {
+                        "id": "987654321_NEBITEL"
+                    },
+                    "timestamp": 123456789,
+                    "message": {
+                        "mid": "mid.12345",
+                        "text": "Hola, vi la promo en Instagram y quiero info"
+                    },
+                    # --- SIMULAMOS QUE VIENE DE PUBLICIDAD ---
+                    "referral": {
+                        "ref": "promo_verano_2026",
+                        "source": "AD",
+                        "type": "OPEN_THREAD"
+                    }
+                }
+            ]
+        }
+    ]
 }
 
-# Usamos la plantilla "hello_world" que Meta te regala por defecto
-data = {
-    "messaging_product": "whatsapp",
-    "to": recipient_phone,
-    "type": "template",
-    "template": {
-        "name": "hello_world",
-        "language": {"code": "en_US"}
-    }
-}
-
-# 3. ¡DISPARAR! 🔫
-print(f"📨 Enviando mensaje a {recipient_phone} desde ID {phone_id}...")
+print("🎭 Enviando mensaje falso de Instagram...")
 
 try:
-    response = requests.post(url, headers=headers, json=data)
+    # Enviamos el POST request (tal cual lo haría Meta)
+    response = requests.post(url, json=payload)
     
-    # 4. Analizar la respuesta
     if response.status_code == 200:
-        print("\n✅ ¡ÉXITO TOTAL! 🚀")
-        print("El mensaje fue enviado. ¡Chequeá tu WhatsApp!")
-        print("Respuesta de Meta:", response.json())
+        print("✅ ¡ÉXITO! El servidor recibió el mensaje.")
+        print("👉 Mirá la terminal donde corre uvicorn para ver la respuesta.")
     else:
-        print("\n❌ HUBO UN PROBLEMA:")
-        print(f"Status Code: {response.status_code}")
-        print("Detalle del error:", response.text)
+        print(f"❌ Error: {response.status_code}")
+        print(response.text)
 
 except Exception as e:
-    print(f"\n💥 Error de conexión: {e}")
+    print(f"🔥 Error de conexión: {e}")
+    print("¿Tenés prendido el uvicorn?")

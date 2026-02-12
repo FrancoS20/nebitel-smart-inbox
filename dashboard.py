@@ -8,7 +8,6 @@ from datetime import datetime, timezone, timedelta
 import streamlit.components.v1 as components
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
-import cerebro
 
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Nebitel CRM", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
@@ -22,7 +21,7 @@ if not DB_URL:
     st.error("❌ Falta DATABASE_URL en el .env")
     st.stop()
 
-# OPTIMIZACIÓN 1: Conexión robusta para que no se caiga
+# Conexión Robusta
 engine = create_engine(
     DB_URL,
     pool_pre_ping=True,
@@ -31,25 +30,54 @@ engine = create_engine(
     pool_recycle=1800
 )
 
-# --- 2. CSS (ESTILO WHATSAPP ORIGINAL) ---
+# --- 2. CSS (ESTILO WHATSAPP + FOTOS CORREGIDO) ---
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; }
     .block-container { padding-top: 2rem !important; padding-bottom: 5rem !important; }
     
+    /* Contenedor del Chat (Para asegurar columna) */
+    #chat-box-monolith {
+        display: flex;
+        flex-direction: column !important;
+        align-items: flex-start;
+    }
+
     /* Burbujas */
     .chat-bubble { 
         padding: 10px 14px; 
         border-radius: 10px; 
         margin-bottom: 8px; 
-        max-width: 70%; 
+        width: fit-content; /* CLAVE: Para que no ocupe todo el ancho */
+        max-width: 75%; 
         font-size: 15px; 
         line-height: 1.4;
         box-shadow: 0 1px 1px rgba(0,0,0,0.2);
+        position: relative;
+        word-wrap: break-word; /* Para que el texto largo baje */
     }
-    .user-bubble { background-color: #202c33; color: white; margin-right: auto; border-top-left-radius: 0; } 
-    .human-bubble { background-color: #005c4b; color: white; margin-left: auto; border-top-right-radius: 0; } 
-    .bot-bubble { background-color: #1f2c34; color: #00bfa5; margin-left: auto; border-top-right-radius: 0; border: 1px solid #00bfa5; } 
+    
+    .user-bubble { 
+        background-color: #202c33; 
+        color: white; 
+        border-top-left-radius: 0; 
+        align-self: flex-start; /* Izquierda */
+    } 
+    
+    .bot-bubble { 
+        background-color: #1f2c34; 
+        color: #00bfa5; 
+        border-top-right-radius: 0; 
+        border: 1px solid #00bfa5; 
+        align-self: flex-end; /* Derecha */
+    }
+
+    .human-bubble { 
+        background-color: #005c4b; 
+        color: white; 
+        border-top-right-radius: 0; 
+        align-self: flex-end; /* Derecha */
+    } 
     
     .meta-info { 
         font-size: 0.7rem; 
@@ -58,29 +86,35 @@ st.markdown("""
         margin-top: 4px; 
         display: block; 
     }
-    
-    /* Botones Sidebar */
-    div.stButton > button { 
-        width: 100%; 
-        text-align: left; 
-        background-color: #111b21; 
-        border: 1px solid #2a3942; 
-        color: #e9edef; 
-        padding: 12px;
+
+    .chat-img {
+        max-width: 200px; /* Limitamos tamaño de foto */
         border-radius: 8px;
-        transition: all 0.2s;
+        margin-bottom: 5px;
+        cursor: pointer;
     }
-    div.stButton > button:hover { border-color: #00a884; background-color: #202c33; }
+
+    .badge-ad {
+        background-color: #ffd700;
+        color: #000;
+        font-size: 0.7rem;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-weight: bold;
+        display: inline-block;
+        margin-bottom: 4px;
+    }
     
-    /* Ocultar header nativo */
+    /* Ocultar header y ajustes botones */
     header[data-testid="stHeader"] { visibility: hidden; }
+    div.stButton > button { width: 100%; text-align: left; background-color: #111b21; border: 1px solid #2a3942; color: #e9edef; padding: 12px; border-radius: 8px; }
+    div.stButton > button:hover { border-color: #00a884; background-color: #202c33; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- 3. FUNCIONES DE LÓGICA ---
 
 def normalizar_hora(df, columna='created_at'):
-    """Convierte UTC a Hora Argentina"""
     if df.empty: return df
     arg_tz = pytz.timezone('America/Argentina/Buenos_Aires')
     df[columna] = pd.to_datetime(df[columna])
@@ -97,16 +131,9 @@ def formatear_fecha(timestamp):
         return timestamp.strftime('%H:%M')
     return timestamp.strftime('%d/%m %H:%M')
 
-# --- FIX TERMINATOR: APAGADO POR TERMINACIÓN ---
 def apagar_bot_por_terminacion(telefono_completo):
-    """
-    Busca cualquier contacto que termine en los últimos 7 dígitos 
-    (para coincidir 549... con 54...) y lo apaga.
-    """
     s = str(telefono_completo).replace("+", "").replace(" ", "").strip()
-    # Usamos los ultimos 7 para asegurar coincidencia
     patron = f"%{s[-7:]}" if len(s) > 7 else s
-    
     with engine.connect() as conn:
         res = conn.execute(text("UPDATE contacts SET bot_mode = FALSE WHERE client_id LIKE :pat"), {"pat": patron})
         conn.commit()
@@ -114,8 +141,6 @@ def apagar_bot_por_terminacion(telefono_completo):
 
 def enviar_whatsapp(telefono, texto):
     if not META_TOKEN: return False
-    
-    # FIX ARGENTINA SANDBOX (Sacar el 9 para enviar)
     dest_meta = str(telefono).replace("+", "").replace(" ", "").strip()
     if dest_meta.startswith("549"): 
         dest_meta = dest_meta.replace("549", "54", 1)
@@ -125,14 +150,10 @@ def enviar_whatsapp(telefono, texto):
     
     try:
         res = requests.post(url, headers=headers, json={"messaging_product": "whatsapp", "to": dest_meta, "type": "text", "text": {"body": texto}})
-        
         if res.status_code == 200:
             with engine.connect() as conn:
-                # Guardamos usando el ID original para que se vea en el chat
                 conn.execute(text("INSERT INTO messages (contact_id, message_text, direction, status, intent, priority_score, created_at, sender_type) VALUES (:cel, :msg, 'outbound', 'sent_by_human', 'Human Reply', 0, NOW(), 'human')"), {"cel": telefono, "msg": texto})
                 conn.commit()
-                
-            # APAGADO NUCLEAR (Terminator)
             apagar_bot_por_terminacion(telefono)
             return True
         else:
@@ -142,29 +163,20 @@ def enviar_whatsapp(telefono, texto):
         print(f"Error enviando: {e}")
         return False
 
-# --- CALLBACK PARA EL BOTÓN (ANTI-REBOTE) ---
 def callback_switch_bot():
-    """Se ejecuta ANTES de recargar la página."""
     try:
         client_id = st.session_state.selected_client
         nuevo_estado = st.session_state[f"tg_{client_id}"]
-        
         if nuevo_estado is False:
-            # Apagar (Nuclear)
             apagar_bot_por_terminacion(client_id)
             st.toast("🛑 Bot APAGADO.")
         else:
-            # Prender (Específico + Nuclear para consistencia)
             s = str(client_id).replace("+", "").strip()
             patron = f"%{s[-7:]}" if len(s) > 7 else s
             with engine.connect() as conn:
                 conn.execute(text("UPDATE contacts SET bot_mode = TRUE WHERE client_id LIKE :pat"), {"pat": patron})
                 conn.commit()
-            
-            # Re-evaluación IA
-            st.toast("🕵️‍♂️ Re-evaluando...")
-            # (Aquí iría la lógica de re-evaluación si se desea)
-            
+            st.toast("🤖 Bot PRENDIDO.")
     except Exception as e: st.error(f"Error Toggle: {e}")
 
 # --- 4. GESTIÓN DE VISTAS ---
@@ -183,12 +195,13 @@ def bloque_mensajes(client_id):
         patron = f"%{s[-7:]}" if len(s) > 7 else s
         
         with engine.connect() as conn:
-            # 1. Traemos mensajes (DESC para limitar)
-            sql = "SELECT * FROM messages WHERE contact_id LIKE :pat ORDER BY created_at DESC LIMIT 50"
+            sql = """
+                SELECT message_text, direction, status, sender_type, intent, created_at, media_url, media_type 
+                FROM messages WHERE contact_id LIKE :pat ORDER BY created_at DESC LIMIT 50
+            """
             df = pd.read_sql(text(sql), conn, params={"pat": patron})
             df = normalizar_hora(df)
             
-            # 2. Ordenamos CRONOLÓGICAMENTE (Viejo -> Nuevo) para leer de arriba a abajo
             if not df.empty:
                 df = df.sort_values(by='created_at', ascending=True)
 
@@ -199,77 +212,72 @@ def bloque_mensajes(client_id):
             st.info("📭 No hay mensajes aún.")
         return
 
-    # --- 3. CONSTRUCCIÓN DEL MONOLITO (SIN ESPACIOS AL INICIO) ---
+    # --- CONSTRUCCIÓN DEL HTML (SIN ESPACIOS NI SANGRÍA) ---
     mensajes_html = ""
     for _, row in df.iterrows():
         hora_str = formatear_fecha(row['created_at'])
         d, s = row['direction'], row['status']
         
+        # 1. Clases
         if d == 'inbound': 
-            cls, ico, align = "user-bubble", "", "left"
+            cls = "user-bubble"
+            ico = ""
+            flex_align = "flex-start"
         elif s == 'sent_by_human' or row['sender_type'] == 'human': 
-            cls, ico, align = "human-bubble", "👨‍💻", "right"
+            cls = "human-bubble"
+            ico = "👨‍💻"
+            flex_align = "flex-end"
         else: 
-            cls, ico, align = "bot-bubble", "🤖", "right"
+            cls = "bot-bubble"
+            ico = "🤖"
+            flex_align = "flex-end"
         
+        # 2. Visuales (Fotos)
+        contenido_visual = ""
+        if row.get('media_url') and row.get('media_type') == 'image':
+            contenido_visual = f"""<a href="{row['media_url']}" target="_blank"><img src="{row['media_url']}" class="chat-img"></a><br>"""
+
+        # 3. Audio
+        icono_audio = ""
+        if row.get('media_type') == 'audio':
+            icono_audio = "🎤 <i>(Audio Transcrito):</i> "
+        
+        # 4. Texto y Badges
+        texto_limpio = str(row["message_text"]).replace("<", "&lt;").replace(">", "&gt;") 
+        
+        if "Viene del anuncio:" in texto_limpio:
+            parts = texto_limpio.split("Viene del anuncio:", 1)
+            if len(parts) > 1:
+                texto_limpio = f"""<div class="badge-ad">📢 LEAD DE INSTAGRAM</div><br>{parts[1]}"""
+            else:
+                texto_limpio = f"""<div class="badge-ad">📢 PUBLICIDAD</div><br>{texto_limpio}"""
+
+        # 5. Intent
         extra_tag = ""
         if row['sender_type'] == 'bot' and row.get('intent'):
-              extra_tag = f"<br><span style='font-size:0.6rem; color:#00bfa5;'>🧠 {row['intent']}</span>"
+             extra_tag = f"""<br><span style='font-size:0.6rem; opacity:0.8;'>🧠 {row['intent']}</span>"""
 
-        # HTML pegado al margen izquierdo
-        mensajes_html += f"""
-<div style="display:flex; justify-content:{'flex-end' if align=='right' else 'flex-start'}; width:100%; margin-bottom: 8px;">
-    <div class="chat-bubble {cls}" style="max-width: 80%;">
-        {row["message_text"]}{extra_tag}
-        <span class="meta-info">{ico} {hora_str}</span>
-    </div>
-</div>"""
+        # 6. HTML FINAL (PEGADO A LA IZQUIERDA - ESTO ES CLAVE)
+        mensajes_html += f"""<div style="display:flex; justify-content:{flex_align}; width:100%; margin-bottom: 8px;"><div class="chat-bubble {cls}">{contenido_visual}<div>{icono_audio}{texto_limpio}</div>{extra_tag}<span class="meta-info">{ico} {hora_str}</span></div></div>"""
 
-    # ID Único para que el Javascript lo encuentre
     unique_id = "chat-box-monolith"
     
-    # --- 4. RENDERIZADO VISUAL ---
-    html_final = f"""
-<div id="{unique_id}" style="
-    height: 600px; 
-    overflow-y: auto; 
-    display: flex; 
-    flex-direction: column; 
-    padding: 10px;
-    border: 1px solid #2a3942;
-    border-radius: 8px;
-    background-color: #0e1117;
-">
-    {mensajes_html}
-</div>
-"""
+    # CONTENEDOR FINAL (TAMBIÉN PEGADO A LA IZQUIERDA)
+    html_final = f"""<div id="{unique_id}" style="height: 600px; overflow-y: auto; display: flex; flex-direction: column; padding: 10px; border: 1px solid #2a3942; border-radius: 8px; background-color: #0e1117;">{mensajes_html}</div>"""
+    
     st.markdown(html_final, unsafe_allow_html=True)
 
-    # --- 5. EL VIGILANTE (JAVASCRIPT APARTE) ---
-    # Usamos components.html para inyectar el script fuera del markdown.
-    # Este script usa ResizeObserver: detecta cuando el contenido cambia y baja el scroll.
+    # JAVASCRIPT
     js_observer = f"""
     <script>
-        // Buscamos el chat por su ID
         var chat = window.parent.document.getElementById("{unique_id}");
-        
         if (chat) {{
-            // 1. Bajamos inmediatamente
             chat.scrollTop = chat.scrollHeight;
-            
-            // 2. Creamos un Observador
-            // Cada vez que Streamlit cambie el contenido (resize), bajamos de nuevo.
             var observer = new ResizeObserver(entries => {{
-                for (let entry of entries) {{
-                    chat.scrollTop = chat.scrollHeight;
-                }}
+                for (let entry of entries) {{ chat.scrollTop = chat.scrollHeight; }}
             }});
-            
-            // Empezamos a vigilar el contenedor y sus hijos
             observer.observe(chat);
-            for (let child of chat.children) {{
-                observer.observe(child);
-            }}
+            for (let child of chat.children) {{ observer.observe(child); }}
         }}
     </script>
     """
@@ -279,60 +287,34 @@ def bloque_mensajes(client_id):
 def bloque_tablero():
     try:
         with engine.connect() as conn:
-            # --- QUERY OPTIMIZADA (TOP 50) ---
-            # 1. Buscamos primero en la tabla CONTACTS quiénes son los últimos 50 que hablaron.
-            # 2. Solo de esos 50 traemos el último mensaje.
-            # Esto evita que el sistema traiga 5000 chats viejos innecesariamente.
-            
+            # Query optimizada Top 50
             sql = """
-                SELECT 
-                    c.client_id, 
-                    c.bot_mode, 
-                    c.platform,
-                    m.created_at,
-                    m.message_text,
-                    m.intent,
-                    m.priority_score
+                SELECT c.client_id, c.bot_mode, c.platform, m.created_at, m.message_text, m.intent, m.priority_score
                 FROM contacts c
                 JOIN LATERAL (
-                    -- Esta magia busca el último mensaje de cada contacto de forma eficiente
                     SELECT message_text, created_at, intent, priority_score
-                    FROM messages 
-                    WHERE contact_id = c.client_id 
-                    ORDER BY created_at DESC 
-                    LIMIT 1
+                    FROM messages WHERE contact_id = c.client_id ORDER BY created_at DESC LIMIT 1
                 ) m ON TRUE
-                ORDER BY m.created_at DESC
-                LIMIT 50;  -- ⬅️ ACÁ ESTÁ EL FRENO DE MANO PARA QUE NO EXPLOTE
+                ORDER BY m.created_at DESC LIMIT 50;
             """
-            
             df = pd.read_sql(text(sql), conn)
-            
-            if not df.empty:
-                df = normalizar_hora(df, 'created_at')
-    except Exception as e: 
-        print(f"Error Tablero: {e}")
-        df = pd.DataFrame()
+            if not df.empty: df = normalizar_hora(df, 'created_at')
+    except: df = pd.DataFrame()
 
     if df.empty:
         st.info("Sin mensajes recientes.")
         return
 
-    # --- CLASIFICACIÓN (Igual que antes) ---
     def clasificar(r):
         intent = str(r['intent'])
         prio = r['priority_score'] if r['priority_score'] else 0
-        # Reglas de negocio
-        if intent in ['Venta','Precio','Stock','Compra'] or prio >= 8:
-            return 'ventas'
-        elif intent in ['Tecnico','Reparación','Falla','Soporte']:
-            return 'tecnico'
+        if intent in ['Venta','Precio','Stock','Compra'] or prio >= 8: return 'ventas'
+        elif intent in ['Tecnico','Reparación','Falla','Soporte']: return 'tecnico'
         return 'varios'
 
     df['cat'] = df.apply(clasificar, axis=1)
     vista = st.session_state.view_category
     
-    # --- RENDERIZADO ---
     if vista == 'all':
         cols = st.columns(3)
         titulos = ["🔥 Oportunidades", "🛠️ Soporte", "💬 General"]
@@ -346,14 +328,10 @@ def bloque_tablero():
                 
                 for _, r in sub_df.iterrows():
                     h = formatear_fecha(r['created_at'])
-                    
-                    # Icons
                     p_icon = "🔵" if 'facebook' in str(r['platform']) else ("📸" if 'instagram' in str(r['platform']) else "🟢")
                     bot_icon = "🟢" if r['bot_mode'] else "🔴"
                     
-                    # Cortamos el texto para que no rompa la tarjeta
                     texto_preview = str(r['message_text'])[:40] + "..." if len(str(r['message_text'])) > 40 else str(r['message_text'])
-                    
                     lbl = f"{p_icon} | **{r['client_id']}** {bot_icon}\n\n_{texto_preview}_\n\n🕒 {h}"
 
                     if st.button(lbl, key=f"card_{r['client_id']}"):
@@ -362,26 +340,28 @@ def bloque_tablero():
         st.subheader(f"📂 {vista.upper()}")
         df_show = df[df['cat'] == vista]
         for _, r in df_show.iterrows():
-            h = formatear_fecha(r['created_at'])
-            p_icon = "🔵" if 'facebook' in str(r['platform']) else ("📸" if 'instagram' in str(r['platform']) else "🟢")
-            bot_icon = "🟢" if r['bot_mode'] else "🔴"
-            
-            lbl = f"{p_icon} | {r['client_id']} {bot_icon} | {h}\n\n{r['message_text']}"
-            if st.button(lbl, key=f"list_{r['client_id']}"):
-                ir_al_chat(r['client_id']); st.rerun()
+            lbl = f"{r['client_id']} | {r['message_text']}"
+            if st.button(lbl, key=f"list_{r['client_id']}"): ir_al_chat(r['client_id']); st.rerun()
 
-# --- 6. SIDEBAR ---
-@st.fragment(run_every=5)
+# --- 6. SIDEBAR (AUTO-REFRESH FIX) ---
+@st.fragment(run_every=5) # <--- ESTO ARREGLA QUE NO SE ACTUALICE
 def render_sidebar():
+    # Título y Botón Home
     st.title("🦅 Nebitel")
-    if st.button("🏠 Tablero Principal", use_container_width=True): volver()
+    if st.button("🏠 Tablero Principal", use_container_width=True): 
+        # Hack para llamar a volver() desde dentro del fragmento
+        st.session_state.selected_client = None
+        st.rerun()
+        
     st.divider()
     st.caption("CHATS RECIENTES")
     
     try:
         with engine.connect() as conn:
+            # Query que trae la prioridad más alta reciente para mostrar el fuego
             df_side = pd.read_sql(text("""
-                SELECT m.contact_id, MAX(m.created_at) as last_msg, c.bot_mode, MAX(m.priority_score) as prio
+                SELECT m.contact_id, MAX(m.created_at) as last_msg, c.bot_mode, 
+                       (SELECT priority_score FROM messages m2 WHERE m2.contact_id = m.contact_id ORDER BY created_at DESC LIMIT 1) as prio
                 FROM messages m
                 JOIN contacts c ON m.contact_id = c.client_id
                 GROUP BY m.contact_id, c.bot_mode
@@ -399,8 +379,10 @@ def render_sidebar():
             
             lbl = f"{icon} [{puntaje}] {row['contact_id']}"
             
+            # Usamos un callback lambda para cambiar el estado sin romper el fragmento
             if st.button(lbl, key=f"side_{row['contact_id']}", use_container_width=True):
-                ir_al_chat(row['contact_id']); st.rerun() 
+                st.session_state.selected_client = row['contact_id']
+                st.rerun()
 
 # --- 7. LAYOUT PRINCIPAL ---
 with st.sidebar:
@@ -409,33 +391,27 @@ with st.sidebar:
 if st.session_state.selected_client:
     client_id = st.session_state.selected_client
     
-    # 1. Obtener estado inicial usando búsqueda nuclear (para saber si ALGÚN clon está activo)
+    # 1. Obtener estado
     s = str(client_id).replace("+", "").strip()
     patron = f"%{s[-7:]}" if len(s) > 7 else s
     with engine.connect() as conn:
         res = conn.execute(text("SELECT bot_mode FROM contacts WHERE client_id LIKE :pat"), {"pat": patron}).fetchall()
         bot_on_db = any(r[0] for r in res)
 
-    # 2. Layout del Encabezado
+    # 2. Header
     c1, c2, c3 = st.columns([1, 6, 3])
     with c1: 
         if st.button("⬅", help="Volver"): volver()
     with c2: 
         st.markdown(f"### 💬 {client_id}")
     with c3:
-        # --- LÓGICA DE VISUALIZACIÓN ---
-        
-        # A. Si venimos de enviar un mensaje manual, forzamos el apagado AHORA (antes de dibujar)
         if st.session_state.get('force_off_next_run') == client_id:
             st.session_state[f"tg_{client_id}"] = False
-            del st.session_state['force_off_next_run'] # Borramos la nota
+            del st.session_state['force_off_next_run']
         
-        # B. Definimos el texto del botón según cómo quedó el estado (DB o Forzado)
-        # Miramos el session_state por si lo acabamos de forzar a False arriba
         estado_actual = st.session_state.get(f"tg_{client_id}", bot_on_db)
         label_dinamico = "🤖 BOT ON" if estado_actual else "🛑 BOT OFF"
 
-        # C. Dibujamos el botón con el texto dinámico
         st.toggle(
             label_dinamico, 
             value=bot_on_db, 
@@ -446,20 +422,15 @@ if st.session_state.selected_client:
     st.divider()
     bloque_mensajes(client_id)
     
-    # --- ÁREA DE INPUT (EL ARREGLO DEL ERROR) ---
     texto = st.chat_input(f"Escribí tu respuesta para {client_id}...")
     
     if texto:
-        # Intentamos enviar
         if enviar_whatsapp(client_id, texto): 
-            # ✅ ESTO ES LO QUE EVITA EL ERROR ROJO:
-            # En lugar de tocar 'st.session_state[tg_...]' aquí abajo (que ya está dibujado),
-            # dejamos una "nota" para el futuro y recargamos.
             st.session_state['force_off_next_run'] = client_id
             st.rerun()
 
 else:
-    # --- VISTA DE TABLERO (Inbox) ---
+    # Inbox
     c_title, c_ref = st.columns([8, 1])
     with c_title: st.title("Smart Inbox 📥")
     with c_ref: 

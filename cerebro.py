@@ -178,3 +178,27 @@ def analizar_prioridad_silenciosa(historial):
         return json.loads(completion.choices[0].message.content)
     except Exception:
         return {"intencion": "Error", "prioridad": 5}
+    
+    # --- NUEVA FUNCIÓN: OÍDO BIÓNICO (Whisper) ---
+def transcribir_audio(ruta_archivo):
+    """
+    Recibe la ruta de un archivo de audio (.ogg, .mp3, etc.)
+    Usa Groq Whisper para convertirlo a texto.
+    """
+    if not client: return "(Error: Groq desconectado)"
+    
+    try:
+        with open(ruta_archivo, "rb") as file:
+            transcription = client.audio.transcriptions.create(
+                file=(ruta_archivo, file.read()),
+                model="whisper-large-v3",
+                response_format="json", 
+                language="es",  # Forzamos español
+                temperature=0.0
+            )
+        texto = transcription.text
+        print(f"👂 AUDIO ESCUCHADO: '{texto}'")
+        return texto
+    except Exception as e:
+        logger.error(f"❌ Error transcribiendo audio: {e}")
+        return "(Audio inaudible o vacío)"
