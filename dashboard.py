@@ -30,13 +30,13 @@ engine = create_engine(
     pool_recycle=1800
 )
 
-# --- 2. CSS (ESTILO WHATSAPP + FOTOS CORREGIDO) ---
+# --- 2. CSS (ESTILO WHATSAPP + FOTOS COMPACTAS) ---
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; }
     .block-container { padding-top: 2rem !important; padding-bottom: 5rem !important; }
     
-    /* Contenedor del Chat (Para asegurar columna) */
+    /* Contenedor del Chat */
     #chat-box-monolith {
         display: flex;
         flex-direction: column !important;
@@ -54,14 +54,14 @@ st.markdown("""
         line-height: 1.4;
         box-shadow: 0 1px 1px rgba(0,0,0,0.2);
         position: relative;
-        word-wrap: break-word; /* Para que el texto largo baje */
+        word-wrap: break-word;
     }
     
     .user-bubble { 
         background-color: #202c33; 
         color: white; 
         border-top-left-radius: 0; 
-        align-self: flex-start; /* Izquierda */
+        align-self: flex-start; 
     } 
     
     .bot-bubble { 
@@ -69,14 +69,14 @@ st.markdown("""
         color: #00bfa5; 
         border-top-right-radius: 0; 
         border: 1px solid #00bfa5; 
-        align-self: flex-end; /* Derecha */
+        align-self: flex-end; 
     }
 
     .human-bubble { 
         background-color: #005c4b; 
         color: white; 
         border-top-right-radius: 0; 
-        align-self: flex-end; /* Derecha */
+        align-self: flex-end; 
     } 
     
     .meta-info { 
@@ -85,13 +85,6 @@ st.markdown("""
         text-align: right; 
         margin-top: 4px; 
         display: block; 
-    }
-
-    .chat-img {
-        max-width: 200px; /* Limitamos tamaño de foto */
-        border-radius: 8px;
-        margin-bottom: 5px;
-        cursor: pointer;
     }
 
     .badge-ad {
@@ -105,7 +98,6 @@ st.markdown("""
         margin-bottom: 4px;
     }
     
-    /* Ocultar header y ajustes botones */
     header[data-testid="stHeader"] { visibility: hidden; }
     div.stButton > button { width: 100%; text-align: left; background-color: #111b21; border: 1px solid #2a3942; color: #e9edef; padding: 12px; border-radius: 8px; }
     div.stButton > button:hover { border-color: #00a884; background-color: #202c33; }
@@ -232,10 +224,10 @@ def bloque_mensajes(client_id):
             ico = "🤖"
             flex_align = "flex-end"
         
-        # 2. Visuales (Fotos)
+        # 2. Visuales (FOTO CON TAMAÑO FORZADO 150px)
         contenido_visual = ""
         if row.get('media_url') and row.get('media_type') == 'image':
-            contenido_visual = f"""<a href="{row['media_url']}" target="_blank"><img src="{row['media_url']}" class="chat-img"></a><br>"""
+            contenido_visual = f"""<a href="{row['media_url']}" target="_blank"><img src="{row['media_url']}" width="150" style="height: auto; border-radius: 8px; margin-bottom: 5px; cursor: pointer;"></a><br>"""
 
         # 3. Audio
         icono_audio = ""
@@ -282,7 +274,7 @@ def bloque_mensajes(client_id):
     </script>
     """
     components.html(js_observer, height=0, width=0)
-    
+
 @st.fragment(run_every=5)
 def bloque_tablero():
     try:
@@ -344,12 +336,11 @@ def bloque_tablero():
             if st.button(lbl, key=f"list_{r['client_id']}"): ir_al_chat(r['client_id']); st.rerun()
 
 # --- 6. SIDEBAR (AUTO-REFRESH FIX) ---
-@st.fragment(run_every=5) # <--- ESTO ARREGLA QUE NO SE ACTUALICE
+@st.fragment(run_every=5)
 def render_sidebar():
     # Título y Botón Home
     st.title("🦅 Nebitel")
     if st.button("🏠 Tablero Principal", use_container_width=True): 
-        # Hack para llamar a volver() desde dentro del fragmento
         st.session_state.selected_client = None
         st.rerun()
         
@@ -358,7 +349,6 @@ def render_sidebar():
     
     try:
         with engine.connect() as conn:
-            # Query que trae la prioridad más alta reciente para mostrar el fuego
             df_side = pd.read_sql(text("""
                 SELECT m.contact_id, MAX(m.created_at) as last_msg, c.bot_mode, 
                        (SELECT priority_score FROM messages m2 WHERE m2.contact_id = m.contact_id ORDER BY created_at DESC LIMIT 1) as prio
@@ -379,7 +369,6 @@ def render_sidebar():
             
             lbl = f"{icon} [{puntaje}] {row['contact_id']}"
             
-            # Usamos un callback lambda para cambiar el estado sin romper el fragmento
             if st.button(lbl, key=f"side_{row['contact_id']}", use_container_width=True):
                 st.session_state.selected_client = row['contact_id']
                 st.rerun()
