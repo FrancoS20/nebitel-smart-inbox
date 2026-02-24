@@ -88,7 +88,8 @@ def procesar_mensaje(texto_usuario, historial_previo=[]):
         3. NO PROMETAS VALOR: No digas "te hacemos precio amigo". Decí "lo cotizamos".
         4. JAMÁS ofrezcas llamar por teléfono. Todo es por chat o presencial.
         5. MEMORIA EDUCADA: Si retomás una charla vieja, NO digas "Che qué onda". Decí algo como "Hola denuevo" o algo por el estilo para retomar la conversacion digamos.
-
+        6. NUNCA CONFIRMES STOCK: Vos no tenés acceso al depósito físico. Si te preguntan por un equipo, decí SIEMPRE algo como: En la brevedad un miembro del staf de Nebitel se pondra en contacto para confirmar el stock".
+        
         🏢 DATOS ÚTILES (Solo si preguntan o es necesario para cerrar):
         - Santa Fe 27: Lun-Vie 8:30-12:30 y 16:30-20:30. Sáb 9-13.
         - Zanni 1597: Lun-Vie 8:40-12:30 y 16:45-20:30. Sáb 9-13 y 17-20:30.
@@ -107,7 +108,7 @@ def procesar_mensaje(texto_usuario, historial_previo=[]):
            - (PRIORIDAD 7).
 
         3. 📱 VENTA DE EQUIPOS (iPhone 15, Celulares):
-           - Si hay intención de compra real: Avisá que consultás stock ya mismo. Retené al cliente.
+           - Si hay intención de compra real: Avisá que consultás stock ya mismo. Retené al cliente. Pero no confirmes o deniegues stock. 
            - (PRIORIDAD 10 - FUEGO).
 
         CONTEXTO ACTUAL: {fecha_hoy} | {ctx_estado}
