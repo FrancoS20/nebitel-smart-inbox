@@ -131,22 +131,41 @@ def apagar_bot_por_terminacion(telefono_completo):
         conn.commit()
         return res.rowcount
 
-def enviar_whatsapp(telefono, texto):
+# CAMBIO: Nueva función que lee la BD para saber la plataforma antes de enviar
+def enviar_mensaje_omnicanal(telefono, texto):
     if not META_TOKEN: return False
-    dest_meta = str(telefono).replace("+", "").replace(" ", "").strip()
-    if dest_meta.startswith("549"): 
-        dest_meta = dest_meta.replace("549", "54", 1)
+    
+    # 1. Buscar plataforma en la BD
+    s = str(telefono).replace("+", "").strip()
+    patron = f"%{s[-7:]}" if len(s) > 7 else s
+    with engine.connect() as conn:
+        plataforma = conn.execute(text("SELECT platform FROM contacts WHERE client_id LIKE :pat LIMIT 1"), {"pat": patron}).scalar()
 
-    url = f"https://graph.facebook.com/v21.0/{META_PHONE_ID}/messages"
     headers = {"Authorization": f"Bearer {META_TOKEN}", "Content-Type": "application/json"}
     
     try:
-        res = requests.post(url, headers=headers, json={"messaging_product": "whatsapp", "to": dest_meta, "type": "text", "text": {"body": texto}})
+        # LÓGICA DE ENVÍO DEPENDIENDO LA PLATAFORMA
+        if plataforma == 'whatsapp':
+            dest_meta = s
+            if dest_meta.startswith("549"): dest_meta = dest_meta.replace("549", "54", 1)
+            url = f"https://graph.facebook.com/v21.0/{META_PHONE_ID}/messages"
+            payload = {"messaging_product": "whatsapp", "to": dest_meta, "type": "text", "text": {"body": texto}}
+            
+        elif plataforma == 'instagram':
+            url = "https://graph.facebook.com/v21.0/me/messages"
+            payload = {"recipient": {"id": telefono}, "message": {"text": texto}}
+            
+        else:
+            st.toast(f"❌ Plataforma desconocida: {plataforma}")
+            return False
+
+        res = requests.post(url, headers=headers, json=payload)
+        
         if res.status_code == 200:
             with engine.connect() as conn:
                 conn.execute(text("INSERT INTO messages (contact_id, message_text, direction, status, intent, priority_score, created_at, sender_type) VALUES (:cel, :msg, 'outbound', 'sent_by_human', 'Human Reply', 0, NOW(), 'human')"), {"cel": telefono, "msg": texto})
                 conn.commit()
-            apagar_bot_por_terminacion(telefono)
+            apagar_bot_por_terminacion(telefono) # Apaga la IA si habló el humano
             return True
         else:
             st.toast(f"❌ Error Meta: {res.text}")
@@ -414,7 +433,7 @@ if st.session_state.selected_client:
     texto = st.chat_input(f"Escribí tu respuesta para {client_id}...")
     
     if texto:
-        if enviar_whatsapp(client_id, texto): 
+        if enviar_mensaje_omnicanal(client_id, texto): 
             st.session_state['force_off_next_run'] = client_id
             st.rerun()
 
