@@ -1,11 +1,12 @@
 import os
 import json
 import logging
+import pytz
 from datetime import datetime
 from groq import Groq
 from dotenv import load_dotenv
 
-# --- CONFIGURACIÓN ---
+#  CONFIGURACIÓN 
 load_dotenv()
 logger = logging.getLogger("cerebro")
 logging.basicConfig(level=logging.INFO)
@@ -30,19 +31,21 @@ def respuesta_basada_en_reglas(texto_usuario):
         "necesita_humano": False
     }
 
-# --- CEREBRO PRINCIPAL ---
+# CEREBRO PRINCIPAL 
 def procesar_mensaje(texto_usuario, historial_previo=[]):
     if not client:
         return respuesta_basada_en_reglas(texto_usuario)
 
     try:
-        # --- 1. CONTEXTO TEMPORAL ---
-        ahora_arg = datetime.now()
+        # --- 1. CONTEXTO TEMPORAL (Hora de Argentina) ---
+        zona_horaria = pytz.timezone('America/Argentina/Buenos_Aires')
+        ahora_arg = datetime.now(zona_horaria)
+        
         hora_actual = ahora_arg.hour
         dia_semana = ahora_arg.weekday() 
         fecha_hoy = ahora_arg.strftime("%d/%m/%Y %H:%M")
 
-        print(f"🕒 HORA PC: {hora_actual}:{ahora_arg.minute}")
+        print(f"🕒 HORA ARGENTINA: {hora_actual}:{ahora_arg.minute:02d}")
 
         if dia_semana <= 4: local_abierto = (8 <= hora_actual < 21)
         elif dia_semana == 5: local_abierto = (9 <= hora_actual < 13)
@@ -50,7 +53,7 @@ def procesar_mensaje(texto_usuario, historial_previo=[]):
 
         ctx_estado = "✅ LOCAL ABIERTO." if local_abierto else "⛔ LOCAL CERRADO (Podés responder, pero avisá que mañana volvemos)."
 
-        # --- 2. SALUDO DINÁMICO ---
+        # SALUDO DINÁMICO 
         if 5 <= hora_actual < 13: frase_saludo = "Hola, buen día! ☀️"
         elif 13 <= hora_actual < 20: frase_saludo = "Hola, buenas tardes! 🌤️"
         else: frase_saludo = "Hola, buenas noches! 🌙"
@@ -62,7 +65,7 @@ def procesar_mensaje(texto_usuario, historial_previo=[]):
         else:
             instruccion_saludo = "IMPORTANTE: YA SALUDASTE ANTES. NO vuelvas a decir 'hola' ni 'buenos días'. Andá directo al grano."
 
-        # --- 3. PROMPT MAESTRO (DINÁMICO Y NATURAL) ---
+        # PROMPT MAESTRO (DINÁMICO Y NATURAL) 
         SYSTEM_PROMPT = f"""
         SOS UN INTEGRANTE DEL EQUIPO, experto en atención al cliente de NEBITEL en Paraná.
         TU OBJETIVO: Responder de forma NATURAL, INFORMATIVA, BREVE, RESOLUTIVA, COORDIAL Y AMABLE.
@@ -104,7 +107,7 @@ def procesar_mensaje(texto_usuario, historial_previo=[]):
             messages.append({"role": role, "content": str(msg["content"])})
         messages.append({"role": "user", "content": texto_usuario})
 
-        # --- 4. GENERACIÓN ---
+        #  GENERACIÓN
         completion = client.chat.completions.create(
             model=MODELO_ELEGIDO,
             messages=messages,
@@ -123,7 +126,7 @@ def procesar_mensaje(texto_usuario, historial_previo=[]):
         logger.error(f"🚨 Falló Groq: {e}")
         return respuesta_basada_en_reglas(texto_usuario)
 
-# --- NUEVA FUNCIÓN: OÍDO BIÓNICO (Whisper) ---
+# Wisper
 def transcribir_audio(ruta_archivo):
     if not client: return "(Error: Groq desconectado)"
     try:
