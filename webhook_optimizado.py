@@ -10,13 +10,13 @@ import uvicorn
 import orjson
 from dotenv import load_dotenv
 import tempfile
-from datetime import datetime # <--- AGREGADO PARA EL TIMEOUT DE 12HS
+from datetime import datetime 
 
-# Tus módulos
+
 import cerebro
 from sqlalchemy import create_engine, text
 
-# --- 1. CONFIGURACIÓN ---
+#  CONFIGURACIÓN 
 load_dotenv()
 
 # Configuración de Logs
@@ -51,7 +51,7 @@ engine = create_engine(
     pool_recycle=1800
 )
 
-# --- 2. FUNCIONES AUXILIARES ---
+#  FUNCIONES AUXILIARES
 
 def descargar_media_meta(url_media: str) -> Optional[bytes]:
     try:
@@ -80,7 +80,7 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
     try:
         entry = payload.get('entry', [])[0]
         
-        # --- CASO A: WHATSAPP ---
+        #  WHATSAPP
         if 'changes' in entry:
             change = entry['changes'][0]['value']
             if 'messages' not in change: return None
@@ -123,7 +123,7 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
                 else:
                     datos['text'] = "(Error Audio)"
 
-        # --- CASO B: INSTAGRAM ---
+        #  INSTAGRAM 
         elif 'messaging' in entry:
             event = entry['messaging'][0]
             if 'message' not in event: return None
@@ -134,7 +134,7 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
             
             message = event['message']
             
-            # 🛡️ ESCUDO ANTI-ECOS: Detecta si lo mandó un humano de la empresa
+            #  ESCUDO ANTI-ECOS: Detecta si lo mandó un humano de la empresa
             if message.get('is_echo') == True:
                 datos['is_echo'] = True
                 datos['text'] = message.get('text', '(Mensaje de empleado)')
@@ -168,27 +168,54 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
         logger.error(f"⚠️ Error normalizando: {e}")
         return None
 
-# --- 3. FUNCIÓN PARA ENVIAR ---
+# FUNCIÓN PARA ENVIAR 
 def enviar_respuesta_meta(destinatario_id, texto, plataforma):
-    if plataforma == 'whatsapp':
-        if not META_TOKEN or not META_PHONE_ID: return
-        url = f"https://graph.facebook.com/v21.0/{META_PHONE_ID}/messages"
-        headers = {"Authorization": f"Bearer {META_TOKEN}", "Content-Type": "application/json"}
-        
-        if destinatario_id.startswith("549"):
-            destinatario_id = destinatario_id.replace("549", "54", 1)
+    if not META_TOKEN: 
+        logger.error("❌ Error: No hay META_TOKEN configurado en Koyeb.")
+        return
+
+    headers = {"Authorization": f"Bearer {META_TOKEN}", "Content-Type": "application/json"}
+    
+    try:
+        # CASO A: WHATSAPP 
+        if plataforma == 'whatsapp':
+            if not META_PHONE_ID: return
+            url = f"https://graph.facebook.com/v21.0/{META_PHONE_ID}/messages"
             
-        data = {"messaging_product": "whatsapp", "to": destinatario_id, "type": "text", "text": {"body": texto}}
-        try:
-            requests.post(url, headers=headers, json=data, timeout=10)
-        except Exception as e:
-            logger.error(f"❌ Error enviando WA: {e}")
+            dest_meta = destinatario_id
+            if dest_meta.startswith("549"):
+                dest_meta = dest_meta.replace("549", "54", 1)
+                
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": dest_meta,
+                "type": "text",
+                "text": {"body": texto}
+            }
 
-    elif plataforma in ['instagram', 'facebook']:
-        # TODO: Implementar envío real de IG cuando haya permisos. Por ahora simulamos.
-        logger.info(f"🚀 [SIMULACIÓN IG] Enviando a {destinatario_id}: {texto}")
+        # CASO B: INSTAGRAM / MESSENGER 
+        elif plataforma in ['instagram', 'facebook']:
+            url = "https://graph.facebook.com/v21.0/me/messages"
+            payload = {
+                "recipient": {"id": destinatario_id},
+                "message": {"text": texto}
+            }
+        else:
+            logger.error(f"❌ Plataforma desconocida: {plataforma}")
+            return
 
-# --- 4. TAREA DE FONDO (LÓGICA PRINCIPAL) ---
+        # --- DISPARO A META ---
+        res = requests.post(url, headers=headers, json=payload, timeout=15)
+        
+        if res.status_code == 200:
+            logger.info(f"✅ ¡Éxito! Mensaje enviado a {plataforma} ({destinatario_id})")
+        else:
+            logger.error(f"❌ Error de Meta enviando a {plataforma}: {res.text}")
+
+    except Exception as e:
+        logger.error(f"🔥 Excepción crítica enviando mensaje: {e}")
+
+#  TAREA DE FONDO 
 def procesar_mensaje_fondo(payload: Dict[Any, Any]):
     try:
         datos = normalizar_evento(payload)
@@ -201,7 +228,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
 
         with engine.connect() as conn:
             
-            # 🛑 1. ESCUDO ANTI-ECOS: Freno de mano si escribió el empleado
+            #  ESCUDO ANTI-ECOS: Freno de mano si escribió el empleado
             if datos.get('is_echo') == True:
                 logger.info(f"🛡️ ESCUDO ANTI-ECOS: Empleado escribió. Apagando bot para {sender_id}.")
                 conn.execute(text("UPDATE contacts SET bot_mode = False, last_activity = NOW() WHERE client_id = :uid"), {"uid": sender_id})
@@ -212,7 +239,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
                 conn.commit()
                 return 
 
-            # ⏳ 2. RESETEO DE 12 HORAS (Session Timeout)
+            #  RESETEO DE 12 HORAS (Session Timeout)
             contacto = conn.execute(text("SELECT bot_mode, last_activity FROM contacts WHERE client_id = :uid"), {"uid": sender_id}).fetchone()
             if contacto and contacto.last_activity:
                 horas_inactivo = (datetime.now() - contacto.last_activity).total_seconds() / 3600
@@ -257,7 +284,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
                 logger.info(f"🤐 Bot APAGADO para {sender_id}. Bye.")
                 return 
 
-            # --- C. CEREBRO IA 🧠 ---
+            #  CEREBRO IA 
             rows = conn.execute(text("SELECT sender_type, message_text FROM messages WHERE contact_id = :uid ORDER BY created_at DESC LIMIT 6"), {"uid": sender_id}).fetchall()
             historial = [{"role": "assistant" if r[0] in ['bot'] else "user", "content": r[1]} for r in reversed(rows)]
             
@@ -274,7 +301,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             necesita_humano = respuesta_ia.get('necesita_humano', False) # Atrapamos la bandera
 
             if texto_resp:
-                # 🛑 3. AUTO-APAGADO (Handoff desde la IA)
+                # AUTO-APAGADO (Handoff desde la IA)
                 if necesita_humano:
                     logger.info(f"🔄 HANDOFF: La IA detectó que se requiere un humano. Apagando bot para {sender_id}.")
                     conn.execute(text("UPDATE contacts SET bot_mode = False WHERE client_id = :uid"), {"uid": sender_id})
@@ -290,7 +317,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
     except Exception as e:
         logger.error(f"🔥 Error CRÍTICO en background task: {e}")
 
-# --- 5. ENDPOINTS & JSON ---
+# ENDPOINTS & JSON 
 class ORJSONResponseCustom(JSONResponse):
     media_type = "application/json"
     def render(self, content: Any) -> bytes:
