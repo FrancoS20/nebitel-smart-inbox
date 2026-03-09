@@ -12,11 +12,10 @@ from dotenv import load_dotenv
 import tempfile
 from datetime import datetime 
 
-
 import cerebro
 from sqlalchemy import create_engine, text
 
-#  CONFIGURACIÓN 
+# CONFIGURACIÓN 
 load_dotenv()
 
 # Configuración de Logs
@@ -51,7 +50,7 @@ engine = create_engine(
     pool_recycle=1800
 )
 
-#  FUNCIONES AUXILIARES
+# FUNCIONES AUXILIARES
 
 def descargar_media_meta(url_media: str) -> Optional[bytes]:
     try:
@@ -78,9 +77,10 @@ def subir_a_cloudinary(contenido_bytes, recurso_tipo="image") -> Optional[str]:
 def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
     datos = {}
     try:
+        object_type = payload.get('object') # Detectamos si el origen es 'instagram' o 'page'
         entry = payload.get('entry', [])[0]
         
-        #  WHATSAPP
+        # WHATSAPP
         if 'changes' in entry:
             change = entry['changes'][0]['value']
             if 'messages' not in change: return None
@@ -123,18 +123,23 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
                 else:
                     datos['text'] = "(Error Audio)"
 
-        #  INSTAGRAM 
+        # INSTAGRAM Y FACEBOOK MESSENGER 
         elif 'messaging' in entry:
             event = entry['messaging'][0]
             if 'message' not in event: return None
 
-            datos['platform'] = 'instagram'
+            # Diferenciamos la plataforma según el object_type
+            if object_type == 'instagram':
+                datos['platform'] = 'instagram'
+                datos['name'] = "Usuario Instagram"
+            else:
+                datos['platform'] = 'facebook'
+                datos['name'] = "Usuario Facebook"
+
             datos['sender_id'] = event['sender']['id']
-            datos['name'] = "Usuario Instagram" 
-            
             message = event['message']
             
-            #  ESCUDO ANTI-ECOS: Detecta si lo mandó un humano de la empresa
+            # ESCUDO ANTI-ECOS: Detecta si lo mandó un humano de la empresa
             if message.get('is_echo') == True:
                 datos['is_echo'] = True
                 datos['text'] = message.get('text', '(Mensaje de empleado)')
@@ -156,11 +161,11 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
                     url_temp = att['payload']['url']
                     contenido = requests.get(url_temp).content
                     datos['media_url'] = subir_a_cloudinary(contenido, "image")
-                    datos['text'] = "(Foto de Instagram)"
+                    datos['text'] = "(Foto)"
                     datos['type'] = 'image'
                     datos['media_type'] = 'image'
                 elif att['type'] == 'audio':
-                     datos['text'] = "(Audio de Instagram - No soportado aún)"
+                     datos['text'] = "(Audio de IG/FB - No soportado aún)"
 
         return datos if 'sender_id' in datos else None
 
@@ -193,14 +198,27 @@ def enviar_respuesta_meta(destinatario_id, texto, plataforma):
                 "text": {"body": texto}
             }
 
-        # CASO B: INSTAGRAM / MESSENGER 
-        elif plataforma in ['instagram', 'facebook']:
-            
+        # CASO B: INSTAGRAM 
+        elif plataforma == 'instagram':
+            # Usa el ID de la cuenta de IG Comercial
+            url = "https://graph.facebook.com/v21.0/17841404579063051/messages"
+            payload = {
+                "recipient": {"id": destinatario_id},
+                "message": {"text": texto}
+            }
+
+        # CASO C: FACEBOOK MESSENGER 
+        elif plataforma == 'facebook':
+            # Usa el ID de la Página de Facebook
             url = "https://graph.facebook.com/v21.0/705301306469428/messages"
             payload = {
                 "recipient": {"id": destinatario_id},
                 "message": {"text": texto}
             }
+
+        else:
+            logger.error(f"❌ Plataforma desconocida: {plataforma}")
+            return
 
         # --- DISPARO A META ---
         res = requests.post(url, headers=headers, json=payload, timeout=15)
@@ -213,7 +231,7 @@ def enviar_respuesta_meta(destinatario_id, texto, plataforma):
     except Exception as e:
         logger.error(f"🔥 Excepción crítica enviando mensaje: {e}")
 
-#  TAREA DE FONDO 
+# TAREA DE FONDO 
 def procesar_mensaje_fondo(payload: Dict[Any, Any]):
     try:
         datos = normalizar_evento(payload)
@@ -222,11 +240,16 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
         sender_id = datos['sender_id']
         platform = datos['platform']
         nombre = datos.get('name', 'Desconocido')
-        texto_usuario = datos.get('text', '')
+        texto_usuario = datos.get('text', '').strip() # Limpiamos espacios
+
+        # ESCUDO ANTI-VACÍOS: Si envían un sticker/vacío, no molestamos a la IA
+        if not texto_usuario and not datos.get('is_echo'):
+            logger.info(f"😶 Mensaje vacío/sticker de {platform} ({sender_id}). Ignorado.")
+            return
 
         with engine.connect() as conn:
             
-            #  ESCUDO ANTI-ECOS: Freno de mano si escribió el empleado
+            # ESCUDO ANTI-ECOS: Freno de mano si escribió el empleado
             if datos.get('is_echo') == True:
                 logger.info(f"🛡️ ESCUDO ANTI-ECOS: Empleado escribió. Apagando bot para {sender_id}.")
                 conn.execute(text("UPDATE contacts SET bot_mode = False, last_activity = NOW() WHERE client_id = :uid"), {"uid": sender_id})
@@ -237,7 +260,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
                 conn.commit()
                 return 
 
-            #  RESETEO DE 12 HORAS (Session Timeout)
+            # RESETEO DE 12 HORAS (Session Timeout)
             contacto = conn.execute(text("SELECT bot_mode, last_activity FROM contacts WHERE client_id = :uid"), {"uid": sender_id}).fetchone()
             if contacto and contacto.last_activity:
                 horas_inactivo = (datetime.now() - contacto.last_activity).total_seconds() / 3600
@@ -282,7 +305,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
                 logger.info(f"🤐 Bot APAGADO para {sender_id}. Bye.")
                 return 
 
-            #  CEREBRO IA 
+            # CEREBRO IA 
             rows = conn.execute(text("SELECT sender_type, message_text FROM messages WHERE contact_id = :uid ORDER BY created_at DESC LIMIT 6"), {"uid": sender_id}).fetchall()
             historial = [{"role": "assistant" if r[0] in ['bot'] else "user", "content": r[1]} for r in reversed(rows)]
             
