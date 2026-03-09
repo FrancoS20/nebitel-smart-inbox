@@ -204,11 +204,11 @@ def enviar_respuesta_meta(destinatario_id, texto, plataforma):
 
         # CASO B: INSTAGRAM 
         elif plataforma == 'instagram':
-           
-            url = "https://graph.facebook.com/v21.0/17841404579063051/messages"
+            url = "https://graph.facebook.com/v21.0/me/messages"
             payload = {
                 "recipient": {"id": destinatario_id},
-                "message": {"text": texto}
+                "message": {"text": texto},
+                "messaging_type": "RESPONSE"
             }
 
         # CASO C: FACEBOOK MESSENGER 
