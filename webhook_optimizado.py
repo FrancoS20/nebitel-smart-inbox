@@ -195,14 +195,12 @@ def enviar_respuesta_meta(destinatario_id, texto, plataforma):
 
         # CASO B: INSTAGRAM / MESSENGER 
         elif plataforma in ['instagram', 'facebook']:
-            url = "https://graph.facebook.com/v21.0/me/messages"
+            
+            url = "https://graph.facebook.com/v21.0/705301306469428/messages"
             payload = {
                 "recipient": {"id": destinatario_id},
                 "message": {"text": texto}
             }
-        else:
-            logger.error(f"❌ Plataforma desconocida: {plataforma}")
-            return
 
         # --- DISPARO A META ---
         res = requests.post(url, headers=headers, json=payload, timeout=15)
