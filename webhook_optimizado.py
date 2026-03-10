@@ -24,9 +24,10 @@ logger = logging.getLogger("webhook-bionico")
 
 app = FastAPI()
 
-# Variables de entorno
+# Variables de entorno (¡AHORA CON LAS DOS LLAVES!)
 DB_URL = os.getenv("DATABASE_URL")
-META_TOKEN = os.getenv("META_TOKEN")
+META_TOKEN = os.getenv("META_TOKEN") # Llave Inmortal para IG y FB
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN") # Llave Maestra para WhatsApp
 META_PHONE_ID = os.getenv("META_PHONE_ID")
 META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN", "nebitel_token_secreto")
 CLOUDINARY_URL = os.getenv("CLOUDINARY_URL")
@@ -52,9 +53,9 @@ engine = create_engine(
 
 # FUNCIONES AUXILIARES
 
-def descargar_media_meta(url_media: str) -> Optional[bytes]:
+def descargar_media_meta(url_media: str, token_a_usar: str) -> Optional[bytes]:
     try:
-        headers = {"Authorization": f"Bearer {META_TOKEN}"}
+        headers = {"Authorization": f"Bearer {token_a_usar}"}
         response = requests.get(url_media, headers=headers, timeout=15)
         if response.status_code == 200:
             return response.content
@@ -104,10 +105,11 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
                 datos['media_url'] = None
             elif msg_type == 'image':
                 media_id = mensaje['image']['id']
-                req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {META_TOKEN}"})
+                # 🔥 Usa la llave de WhatsApp
+                req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"})
                 if req.status_code == 200:
                     url_temp = req.json().get('url')
-                    contenido = descargar_media_meta(url_temp)
+                    contenido = descargar_media_meta(url_temp, WHATSAPP_TOKEN)
                     datos['media_url'] = subir_a_cloudinary(contenido, "image")
                     datos['text'] = mensaje['image'].get('caption', '(Foto enviada)')
                     datos['media_type'] = 'image'
@@ -115,7 +117,8 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
                     datos['text'] = "(Error Foto)"
             elif msg_type == 'audio':
                 media_id = mensaje['audio']['id']
-                req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {META_TOKEN}"})
+                # 🔥 Usa la llave de WhatsApp
+                req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"})
                 if req.status_code == 200:
                     datos['audio_url_meta'] = req.json().get('url') 
                     datos['text'] = "(Audio recibiendo...)" 
@@ -175,11 +178,14 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
 
 # FUNCIÓN PARA ENVIAR 
 def enviar_respuesta_meta(destinatario_id, texto, plataforma):
-    if not META_TOKEN: 
-        logger.error("❌ Error: No hay META_TOKEN configurado en Koyeb.")
+    #  MEJORA DEFINITIVA: Elige la llave y la URL según la plataforma
+    token_a_usar = WHATSAPP_TOKEN if plataforma == 'whatsapp' else META_TOKEN
+
+    if not token_a_usar: 
+        logger.error(f"❌ Error: No hay token configurado para {plataforma}.")
         return
 
-    headers = {"Authorization": f"Bearer {META_TOKEN}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {token_a_usar}", "Content-Type": "application/json"}
     
     try:
         # CASO A: WHATSAPP 
@@ -198,29 +204,21 @@ def enviar_respuesta_meta(destinatario_id, texto, plataforma):
                 "text": {"body": texto}
             }
 
-        # CASO B: INSTAGRAM 
-        elif plataforma == 'instagram':
-            # Usa el ID de la cuenta de IG Comercial
-            url = "https://graph.facebook.com/v21.0/17841404579063051/messages"
+        # CASO B: INSTAGRAM Y FACEBOOK MESSENGER
+        elif plataforma in ['instagram', 'facebook']:
+            # La ruta "me" es la oficial cuando usamos un Page Access Token
+            url = "https://graph.facebook.com/v21.0/me/messages"
             payload = {
                 "recipient": {"id": destinatario_id},
-                "message": {"text": texto}
-            }
-
-        # CASO C: FACEBOOK MESSENGER 
-        elif plataforma == 'facebook':
-            # Usa el ID de la Página de Facebook
-            url = "https://graph.facebook.com/v21.0/705301306469428/messages"
-            payload = {
-                "recipient": {"id": destinatario_id},
-                "message": {"text": texto}
+                "message": {"text": texto},
+                "messaging_type": "RESPONSE" # Sello anti-spam de Meta
             }
 
         else:
             logger.error(f"❌ Plataforma desconocida: {plataforma}")
             return
 
-        # --- DISPARO A META ---
+        # DISPARO A META 
         res = requests.post(url, headers=headers, json=payload, timeout=15)
         
         if res.status_code == 200:
@@ -240,7 +238,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
         sender_id = datos['sender_id']
         platform = datos['platform']
         nombre = datos.get('name', 'Desconocido')
-        texto_usuario = datos.get('text', '').strip() # Limpiamos espacios
+        texto_usuario = datos.get('text', '').strip()
 
         # ESCUDO ANTI-VACÍOS: Si envían un sticker/vacío, no molestamos a la IA
         if not texto_usuario and not datos.get('is_echo'):
@@ -278,7 +276,11 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             # LÓGICA DE AUDIO (WHISPER)
             if datos.get('type') == 'audio' and datos.get('audio_url_meta'):
                 logger.info("🎤 Mensaje de Audio detectado. Iniciando transcripción...")
-                audio_bytes = descargar_media_meta(datos['audio_url_meta'])
+                
+                #  Seleccionamos la llave correcta para descargar el audio
+                token_para_audio = WHATSAPP_TOKEN if platform == 'whatsapp' else META_TOKEN
+                audio_bytes = descargar_media_meta(datos['audio_url_meta'], token_para_audio)
+                
                 if audio_bytes:
                     with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
                         temp_audio.write(audio_bytes)
@@ -319,7 +321,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             texto_resp = respuesta_ia.get('respuesta', '')
             intencion = respuesta_ia.get('intencion', 'General')
             prio = respuesta_ia.get('prioridad', 5)
-            necesita_humano = respuesta_ia.get('necesita_humano', False) # Atrapamos la bandera
+            necesita_humano = respuesta_ia.get('necesita_humano', False) 
 
             if texto_resp:
                 # AUTO-APAGADO (Handoff desde la IA)
