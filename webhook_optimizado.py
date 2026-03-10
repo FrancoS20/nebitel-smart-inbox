@@ -24,7 +24,7 @@ logger = logging.getLogger("webhook-bionico")
 
 app = FastAPI()
 
-# Variables de entorno (¡AHORA CON LAS DOS LLAVES!)
+# Variables de entorno (¡CON LAS DOS LLAVES!)
 DB_URL = os.getenv("DATABASE_URL")
 META_TOKEN = os.getenv("META_TOKEN") # Llave Inmortal para IG y FB
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN") # Llave Maestra para WhatsApp
@@ -105,7 +105,6 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
                 datos['media_url'] = None
             elif msg_type == 'image':
                 media_id = mensaje['image']['id']
-                # 🔥 Usa la llave de WhatsApp
                 req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"})
                 if req.status_code == 200:
                     url_temp = req.json().get('url')
@@ -117,7 +116,6 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
                     datos['text'] = "(Error Foto)"
             elif msg_type == 'audio':
                 media_id = mensaje['audio']['id']
-                # 🔥 Usa la llave de WhatsApp
                 req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"})
                 if req.status_code == 200:
                     datos['audio_url_meta'] = req.json().get('url') 
@@ -178,7 +176,7 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
 
 # FUNCIÓN PARA ENVIAR 
 def enviar_respuesta_meta(destinatario_id, texto, plataforma):
-    #  MEJORA DEFINITIVA: Elige la llave y la URL según la plataforma
+    # 🔥 Elige la llave según la plataforma
     token_a_usar = WHATSAPP_TOKEN if plataforma == 'whatsapp' else META_TOKEN
 
     if not token_a_usar: 
@@ -204,21 +202,30 @@ def enviar_respuesta_meta(destinatario_id, texto, plataforma):
                 "text": {"body": texto}
             }
 
-        # CASO B: INSTAGRAM Y FACEBOOK MESSENGER
-        elif plataforma in ['instagram', 'facebook']:
-            # La ruta "me" es la oficial cuando usamos un Page Access Token
+        # CASO B: INSTAGRAM 
+        elif plataforma == 'instagram':
             url = "https://graph.facebook.com/v21.0/me/messages"
             payload = {
                 "recipient": {"id": destinatario_id},
                 "message": {"text": texto},
-                "messaging_type": "RESPONSE" # Sello anti-spam de Meta
+                "messaging_type": "RESPONSE"
+            }
+
+        # CASO C: FACEBOOK MESSENGER 
+        elif plataforma == 'facebook':
+            # Facebook usa su propia ruta "me"
+            url = "https://graph.facebook.com/v21.0/me/messages"
+            payload = {
+                "recipient": {"id": destinatario_id},
+                "message": {"text": texto},
+                "messaging_type": "RESPONSE"
             }
 
         else:
             logger.error(f"❌ Plataforma desconocida: {plataforma}")
             return
 
-        # DISPARO A META 
+        #  DISPARO A META 
         res = requests.post(url, headers=headers, json=payload, timeout=15)
         
         if res.status_code == 200:
@@ -277,7 +284,6 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             if datos.get('type') == 'audio' and datos.get('audio_url_meta'):
                 logger.info("🎤 Mensaje de Audio detectado. Iniciando transcripción...")
                 
-                #  Seleccionamos la llave correcta para descargar el audio
                 token_para_audio = WHATSAPP_TOKEN if platform == 'whatsapp' else META_TOKEN
                 audio_bytes = descargar_media_meta(datos['audio_url_meta'], token_para_audio)
                 
@@ -321,7 +327,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             texto_resp = respuesta_ia.get('respuesta', '')
             intencion = respuesta_ia.get('intencion', 'General')
             prio = respuesta_ia.get('prioridad', 5)
-            necesita_humano = respuesta_ia.get('necesita_humano', False) 
+            necesita_humano = respuesta_ia.get('necesita_humano', False) # Atrapamos la bandera
 
             if texto_resp:
                 # AUTO-APAGADO (Handoff desde la IA)
