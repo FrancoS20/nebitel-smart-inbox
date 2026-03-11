@@ -146,6 +146,7 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
                 #Si es un eco, el cliente es el que RECIBE (recipient), no el que envía
                 datos['sender_id'] = event['recipient']['id'] 
                 datos['text'] = message.get('text', '(Mensaje de empleado)')
+                datos['app_id'] = message.get('app_id')
                 return datos # Retorna rápido para cortar ejecución
             else:
                 datos['is_echo'] = False
@@ -258,6 +259,9 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             
             # ESCUDO ANTI-ECOS: Freno de mano si escribió el empleado
             if datos.get('is_echo') == True:
+                if datos.get('app_id'):
+                    logger.info("🤖 Eco del propio bot detectado. Ignorando para no duplicar.")
+                    return
                 logger.info(f"🛡️ ESCUDO ANTI-ECOS: Empleado escribió. Apagando bot para {sender_id}.")
                 conn.execute(text("UPDATE contacts SET bot_mode = False, last_activity = NOW() WHERE client_id = :uid"), {"uid": sender_id})
                 conn.execute(text("""
