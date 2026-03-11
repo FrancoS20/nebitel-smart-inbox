@@ -24,9 +24,9 @@ logger = logging.getLogger("webhook-bionico")
 
 app = FastAPI()
 
-# Variables de entorno (¡CON LAS DOS LLAVES!)
+# Variables de entorno 
 DB_URL = os.getenv("DATABASE_URL")
-META_TOKEN = os.getenv("META_TOKEN") # Llave Inmortal para IG y FB
+META_TOKEN = os.getenv("META_TOKEN") 
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN") # Llave Maestra para WhatsApp
 META_PHONE_ID = os.getenv("META_PHONE_ID")
 META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN", "nebitel_token_secreto")
@@ -143,7 +143,7 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
             # ESCUDO ANTI-ECOS: Detecta si lo mandó un humano de la empresa
             if message.get('is_echo') == True:
                 datos['is_echo'] = True
-                #Si es un eco, el cliente es el que RECIBE (recipient), no el que envía
+                # Si es un eco, el cliente es el que RECIBE (recipient), no el que envía
                 datos['sender_id'] = event['recipient']['id'] 
                 datos['text'] = message.get('text', '(Mensaje de empleado)')
                 datos['app_id'] = message.get('app_id')
@@ -216,7 +216,6 @@ def enviar_respuesta_meta(destinatario_id, texto, plataforma):
 
         # CASO C: FACEBOOK MESSENGER 
         elif plataforma == 'facebook':
-            # Facebook usa su propia ruta "me"
             url = "https://graph.facebook.com/v21.0/me/messages"
             payload = {
                 "recipient": {"id": destinatario_id},
@@ -259,9 +258,22 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             
             # ESCUDO ANTI-ECOS: Freno de mano si escribió el empleado
             if datos.get('is_echo') == True:
+                
+                # PLAN A: Control por firma de la App (Si Meta se digna a mandarla)
                 if datos.get('app_id'):
-                    logger.info("🤖 Eco del propio bot detectado. Ignorando para no duplicar.")
+                    logger.info("🤖 Eco del bot detectado (por app_id). Ignorando.")
                     return
+                
+                # PLAN B (ANTIBALAS): Control por texto exacto
+                ultimo_mensaje_bot = conn.execute(text(
+                    "SELECT message_text FROM messages WHERE contact_id = :uid AND sender_type = 'bot' ORDER BY created_at DESC LIMIT 1"
+                ), {"uid": sender_id}).scalar()
+
+                if ultimo_mensaje_bot and ultimo_mensaje_bot.strip() == texto_usuario:
+                    logger.info("🤖 Eco del bot detectado (por texto exacto). Ignorando para no duplicar.")
+                    return
+                
+                # Si no tiene app_id y el texto NO coincide... ¡entonces sí fue un humano desde el celu!
                 logger.info(f"🛡️ ESCUDO ANTI-ECOS: Empleado escribió. Apagando bot para {sender_id}.")
                 conn.execute(text("UPDATE contacts SET bot_mode = False, last_activity = NOW() WHERE client_id = :uid"), {"uid": sender_id})
                 conn.execute(text("""
