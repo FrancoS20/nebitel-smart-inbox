@@ -143,6 +143,8 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
             # ESCUDO ANTI-ECOS: Detecta si lo mandó un humano de la empresa
             if message.get('is_echo') == True:
                 datos['is_echo'] = True
+                #Si es un eco, el cliente es el que RECIBE (recipient), no el que envía
+                datos['sender_id'] = event['recipient']['id'] 
                 datos['text'] = message.get('text', '(Mensaje de empleado)')
                 return datos # Retorna rápido para cortar ejecución
             else:
