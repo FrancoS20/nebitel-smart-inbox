@@ -14,7 +14,8 @@ st.set_page_config(page_title="Nebitel CRM", page_icon="🦅", layout="wide", in
 
 load_dotenv()
 DB_URL = os.getenv("DATABASE_URL")
-META_TOKEN = os.getenv("META_TOKEN")
+META_TOKEN = os.getenv("META_TOKEN")         # Llave del Local (Para Instagram)
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN") # Súper Llave del Edificio (Para WhatsApp)
 META_PHONE_ID = os.getenv("META_PHONE_ID")
 
 if not DB_URL:
@@ -30,7 +31,7 @@ engine = create_engine(
     pool_recycle=1800
 )
 
-#  CSS (ESTILO WHATSAPP + FOTOS COMPACTAS)
+#  CSS (ESTILO WHATSAPP + FOTOS COMPACTAS)
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; }
@@ -131,17 +132,22 @@ def apagar_bot_por_terminacion(telefono_completo):
         conn.commit()
         return res.rowcount
 
-# CAMBIO: Nueva función que lee la BD para saber la plataforma antes de enviar
+# CAMBIO: Función omnicanal con llaves separadas
 def enviar_mensaje_omnicanal(telefono, texto):
-    if not META_TOKEN: return False
-    
     # Buscar plataforma en la BD
     s = str(telefono).replace("+", "").strip()
     patron = f"%{s[-7:]}" if len(s) > 7 else s
     with engine.connect() as conn:
         plataforma = conn.execute(text("SELECT platform FROM contacts WHERE client_id LIKE :pat LIMIT 1"), {"pat": patron}).scalar()
 
-    headers = {"Authorization": f"Bearer {META_TOKEN}", "Content-Type": "application/json"}
+    # 🔥 MAGIA: Elegir la llave correcta según la plataforma
+    token_a_usar = WHATSAPP_TOKEN if plataforma == 'whatsapp' else META_TOKEN
+    
+    if not token_a_usar: 
+        st.toast(f"❌ Falla: No hay token configurado para {plataforma}")
+        return False
+
+    headers = {"Authorization": f"Bearer {token_a_usar}", "Content-Type": "application/json"}
     
     try:
         # LÓGICA DE ENVÍO DEPENDIENDO LA PLATAFORMA
@@ -151,7 +157,7 @@ def enviar_mensaje_omnicanal(telefono, texto):
             url = f"https://graph.facebook.com/v21.0/{META_PHONE_ID}/messages"
             payload = {"messaging_product": "whatsapp", "to": dest_meta, "type": "text", "text": {"body": texto}}
             
-        elif plataforma == 'instagram':
+        elif plataforma in ['instagram', 'facebook']:
             url = "https://graph.facebook.com/v21.0/me/messages"
             payload = {"recipient": {"id": telefono}, "message": {"text": texto}}
             
@@ -190,14 +196,14 @@ def callback_switch_bot():
             st.toast("🤖 Bot PRENDIDO.")
     except Exception as e: st.error(f"Error Toggle: {e}")
 
-#  GESTIÓN DE VISTAS
+#  GESTIÓN DE VISTAS
 if 'selected_client' not in st.session_state: st.session_state.selected_client = None
 if 'view_category' not in st.session_state: st.session_state.view_category = "all"
 
 def ir_al_chat(cid): st.session_state.selected_client = cid
 def volver(): st.session_state.selected_client = None; st.rerun()
 
-#  COMPONENTES VIVOS (FRAGMENTS)
+#  COMPONENTES VIVOS (FRAGMENTS)
 
 @st.fragment(run_every=3)
 def bloque_mensajes(client_id):
@@ -223,7 +229,7 @@ def bloque_mensajes(client_id):
             st.info("📭 No hay mensajes aún.")
         return
 
-    #  CONSTRUCCIÓN DEL HTML  
+    #  CONSTRUCCIÓN DEL HTML  
     mensajes_html = ""
     for _, row in df.iterrows():
         hora_str = formatear_fecha(row['created_at'])
@@ -248,12 +254,12 @@ def bloque_mensajes(client_id):
         if row.get('media_url') and row.get('media_type') == 'image':
             contenido_visual = f"""<a href="{row['media_url']}" target="_blank"><img src="{row['media_url']}" width="150" style="height: auto; border-radius: 8px; margin-bottom: 5px; cursor: pointer;"></a><br>"""
 
-        #  Audio
+        #  Audio
         icono_audio = ""
         if row.get('media_type') == 'audio':
             icono_audio = "🎤 <i>(Audio Transcrito):</i> "
         
-        #  Texto y Badges
+        #  Texto y Badges
         texto_limpio = str(row["message_text"]).replace("<", "&lt;").replace(">", "&gt;") 
         
         if "Viene del anuncio:" in texto_limpio:
@@ -263,12 +269,12 @@ def bloque_mensajes(client_id):
             else:
                 texto_limpio = f"""<div class="badge-ad">📢 PUBLICIDAD</div><br>{texto_limpio}"""
 
-        #  Intent
+        #  Intent
         extra_tag = ""
         if row['sender_type'] == 'bot' and row.get('intent'):
              extra_tag = f"""<br><span style='font-size:0.6rem; opacity:0.8;'>🧠 {row['intent']}</span>"""
 
-        #  HTML FINAL 
+        #  HTML FINAL 
         mensajes_html += f"""<div style="display:flex; justify-content:{flex_align}; width:100%; margin-bottom: 8px;"><div class="chat-bubble {cls}">{contenido_visual}<div>{icono_audio}{texto_limpio}</div>{extra_tag}<span class="meta-info">{ico} {hora_str}</span></div></div>"""
 
     unique_id = "chat-box-monolith"
@@ -354,7 +360,7 @@ def bloque_tablero():
             lbl = f"{r['client_id']} | {r['message_text']}"
             if st.button(lbl, key=f"list_{r['client_id']}"): ir_al_chat(r['client_id']); st.rerun()
 
-#  SIDEBAR (AUTO-REFRESH FIX) 
+#  SIDEBAR (AUTO-REFRESH FIX) 
 @st.fragment(run_every=5)
 def render_sidebar():
     # Título y Botón Home
