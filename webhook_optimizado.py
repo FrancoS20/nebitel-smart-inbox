@@ -27,7 +27,7 @@ app = FastAPI()
 # Variables de entorno 
 DB_URL = os.getenv("DATABASE_URL")
 META_TOKEN = os.getenv("META_TOKEN")           # Llave del Local (IG y FB)
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")   # Llave del Edificio (WhatsApp)
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")   # Súper Llave (WhatsApp)
 META_PHONE_ID = os.getenv("META_PHONE_ID")
 META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN", "nebitel_token_secreto")
 CLOUDINARY_URL = os.getenv("CLOUDINARY_URL")
@@ -68,6 +68,7 @@ def subir_a_cloudinary(contenido_bytes, recurso_tipo="image") -> Optional[str]:
         if not CLOUDINARY_URL or not contenido_bytes: return None
         res = cloudinary.uploader.upload(contenido_bytes, resource_type=recurso_tipo)
         secure_url = res.get("secure_url")
+        logger.info(f"☁️ Archivo guardado en Cloudinary: {secure_url}")
         return secure_url
     except Exception as e:
         logger.error(f"❌ Error Cloudinary: {e}")
@@ -172,7 +173,6 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
         logger.error(f"⚠️ Error normalizando: {e}")
         return None
 
-# FUNCIÓN PARA ENVIAR (ACÁ ESTÁ LA MAGIA DE FRANCO RESTAURADA)
 def enviar_respuesta_meta(destinatario_id, texto, plataforma):
     token_a_usar = WHATSAPP_TOKEN if plataforma == 'whatsapp' else META_TOKEN
 
@@ -229,17 +229,23 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
         nombre = datos.get('name', 'Desconocido')
         texto_usuario = datos.get('text', '').strip()
 
-        if not texto_usuario and not datos.get('is_echo'): return
+        if not texto_usuario and not datos.get('is_echo'):
+            logger.info(f"😶 Mensaje vacío/sticker de {platform} ({sender_id}). Ignorado.")
+            return
 
         with engine.connect() as conn:
             if datos.get('is_echo') == True:
-                if datos.get('app_id'): return
+                if datos.get('app_id'):
+                    logger.info("🤖 Eco del bot detectado (por app_id). Ignorando.")
+                    return
                 
                 ultimo_mensaje_bot = conn.execute(text(
                     "SELECT message_text FROM messages WHERE contact_id = :uid AND sender_type = 'bot' ORDER BY created_at DESC LIMIT 1"
                 ), {"uid": sender_id}).scalar()
 
-                if ultimo_mensaje_bot and ultimo_mensaje_bot.strip() == texto_usuario: return
+                if ultimo_mensaje_bot and ultimo_mensaje_bot.strip() == texto_usuario:
+                    logger.info("🤖 Eco del bot detectado (por texto exacto). Ignorando para no duplicar.")
+                    return
                 
                 logger.info(f"🛡️ ESCUDO ANTI-ECOS: Empleado escribió. Apagando bot para {sender_id}.")
                 conn.execute(text("UPDATE contacts SET bot_mode = False, last_activity = NOW() WHERE client_id = :uid"), {"uid": sender_id})
@@ -254,6 +260,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             if contacto and contacto.last_activity:
                 horas_inactivo = (datetime.now() - contacto.last_activity).total_seconds() / 3600
                 if horas_inactivo > 12:
+                    logger.info(f"🌅 Pasaron {horas_inactivo:.1f} horas. Reseteando bot para {sender_id}")
                     conn.execute(text("UPDATE contacts SET bot_mode = True WHERE client_id = :uid"), {"uid": sender_id})
                     conn.commit()
 
@@ -263,6 +270,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             """), {"cid": sender_id, "nom": nombre, "plat": platform})
             
             if datos.get('type') == 'audio' and datos.get('audio_url_meta'):
+                logger.info("🎤 Mensaje de Audio detectado. Iniciando transcripción...")
                 token_para_audio = WHATSAPP_TOKEN if platform == 'whatsapp' else META_TOKEN
                 audio_bytes = descargar_media_meta(datos['audio_url_meta'], token_para_audio)
                 
@@ -277,6 +285,8 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
                 else:
                     texto_usuario = "(Audio vacío)"
 
+            logger.info(f"📨 {platform.upper()}: {nombre} ({sender_id}) - '{texto_usuario}'")
+
             conn.execute(text("""
                 INSERT INTO messages (contact_id, message_text, media_url, media_type, direction, status, sender_type, created_at)
                 VALUES (:cid, :txt, :url, :mtype, 'inbound', 'received', 'user', NOW())
@@ -284,7 +294,9 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             conn.commit()
 
             estado_bot = conn.execute(text("SELECT bot_mode FROM contacts WHERE client_id = :uid"), {"uid": sender_id}).scalar()
-            if estado_bot is False: return 
+            if estado_bot is False:
+                logger.info(f"🤐 Bot APAGADO para {sender_id}. Bye.")
+                return 
 
             rows = conn.execute(text("SELECT sender_type, message_text FROM messages WHERE contact_id = :uid ORDER BY created_at DESC LIMIT 6"), {"uid": sender_id}).fetchall()
             historial = [{"role": "assistant" if r[0] in ['bot'] else "user", "content": r[1]} for r in reversed(rows)]
@@ -302,6 +314,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
 
             if texto_resp:
                 if necesita_humano:
+                    logger.info(f"🔄 HANDOFF: La IA detectó que se requiere un humano. Apagando bot para {sender_id}.")
                     conn.execute(text("UPDATE contacts SET bot_mode = False WHERE client_id = :uid"), {"uid": sender_id})
 
                 conn.execute(text("""
