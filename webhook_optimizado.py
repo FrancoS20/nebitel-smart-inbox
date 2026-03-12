@@ -26,7 +26,8 @@ app = FastAPI()
 
 # Variables de entorno 
 DB_URL = os.getenv("DATABASE_URL")
-META_TOKEN = os.getenv("META_TOKEN") # SÚPER LLAVE ÚNICA PARA IG, FB Y WSP
+META_TOKEN = os.getenv("META_TOKEN")           # Llave del Local (IG y FB)
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")   # Llave del Edificio (WhatsApp)
 META_PHONE_ID = os.getenv("META_PHONE_ID")
 META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN", "nebitel_token_secreto")
 CLOUDINARY_URL = os.getenv("CLOUDINARY_URL")
@@ -51,7 +52,6 @@ engine = create_engine(
 )
 
 # FUNCIONES AUXILIARES
-
 def descargar_media_meta(url_media: str, token_a_usar: str) -> Optional[bytes]:
     try:
         headers = {"Authorization": f"Bearer {token_a_usar}"}
@@ -68,7 +68,6 @@ def subir_a_cloudinary(contenido_bytes, recurso_tipo="image") -> Optional[str]:
         if not CLOUDINARY_URL or not contenido_bytes: return None
         res = cloudinary.uploader.upload(contenido_bytes, resource_type=recurso_tipo)
         secure_url = res.get("secure_url")
-        logger.info(f"☁️ Archivo guardado en Cloudinary: {secure_url}")
         return secure_url
     except Exception as e:
         logger.error(f"❌ Error Cloudinary: {e}")
@@ -104,10 +103,10 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
                 datos['media_url'] = None
             elif msg_type == 'image':
                 media_id = mensaje['image']['id']
-                req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {META_TOKEN}"})
+                req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"})
                 if req.status_code == 200:
                     url_temp = req.json().get('url')
-                    contenido = descargar_media_meta(url_temp, META_TOKEN)
+                    contenido = descargar_media_meta(url_temp, WHATSAPP_TOKEN)
                     datos['media_url'] = subir_a_cloudinary(contenido, "image")
                     datos['text'] = mensaje['image'].get('caption', '(Foto enviada)')
                     datos['media_type'] = 'image'
@@ -115,7 +114,7 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
                     datos['text'] = "(Error Foto)"
             elif msg_type == 'audio':
                 media_id = mensaje['audio']['id']
-                req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {META_TOKEN}"})
+                req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"})
                 if req.status_code == 200:
                     datos['audio_url_meta'] = req.json().get('url') 
                     datos['text'] = "(Audio recibiendo...)" 
@@ -173,17 +172,17 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
         logger.error(f"⚠️ Error normalizando: {e}")
         return None
 
-# FUNCIÓN PARA ENVIAR 
+# FUNCIÓN PARA ENVIAR (ACÁ ESTÁ LA MAGIA DE FRANCO RESTAURADA)
 def enviar_respuesta_meta(destinatario_id, texto, plataforma):
-    # 🔥 Ahora usamos siempre la Súper Llave (META_TOKEN)
-    if not META_TOKEN: 
-        logger.error(f"❌ Error: No hay token configurado en META_TOKEN.")
+    token_a_usar = WHATSAPP_TOKEN if plataforma == 'whatsapp' else META_TOKEN
+
+    if not token_a_usar: 
+        logger.error(f"❌ Error: No hay token configurado para {plataforma}.")
         return
 
-    headers = {"Authorization": f"Bearer {META_TOKEN}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {token_a_usar}", "Content-Type": "application/json"}
     
     try:
-        # CASO A: WHATSAPP 
         if plataforma == 'whatsapp':
             if not META_PHONE_ID: return
             url = f"https://graph.facebook.com/v21.0/{META_PHONE_ID}/messages"
@@ -199,7 +198,6 @@ def enviar_respuesta_meta(destinatario_id, texto, plataforma):
                 "text": {"body": texto}
             }
 
-        # CASO B Y C: INSTAGRAM / FACEBOOK
         elif plataforma in ['instagram', 'facebook']:
             url = "https://graph.facebook.com/v21.0/me/messages"
             payload = {
@@ -207,12 +205,9 @@ def enviar_respuesta_meta(destinatario_id, texto, plataforma):
                 "message": {"text": texto},
                 "messaging_type": "RESPONSE"
             }
-
         else:
-            logger.error(f"❌ Plataforma desconocida: {plataforma}")
             return
 
-        #  DISPARO A META 
         res = requests.post(url, headers=headers, json=payload, timeout=15)
         
         if res.status_code == 200:
@@ -234,23 +229,17 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
         nombre = datos.get('name', 'Desconocido')
         texto_usuario = datos.get('text', '').strip()
 
-        if not texto_usuario and not datos.get('is_echo'):
-            logger.info(f"😶 Mensaje vacío/sticker de {platform} ({sender_id}). Ignorado.")
-            return
+        if not texto_usuario and not datos.get('is_echo'): return
 
         with engine.connect() as conn:
             if datos.get('is_echo') == True:
-                if datos.get('app_id'):
-                    logger.info("🤖 Eco del bot detectado (por app_id). Ignorando.")
-                    return
+                if datos.get('app_id'): return
                 
                 ultimo_mensaje_bot = conn.execute(text(
                     "SELECT message_text FROM messages WHERE contact_id = :uid AND sender_type = 'bot' ORDER BY created_at DESC LIMIT 1"
                 ), {"uid": sender_id}).scalar()
 
-                if ultimo_mensaje_bot and ultimo_mensaje_bot.strip() == texto_usuario:
-                    logger.info("🤖 Eco del bot detectado (por texto exacto). Ignorando para no duplicar.")
-                    return
+                if ultimo_mensaje_bot and ultimo_mensaje_bot.strip() == texto_usuario: return
                 
                 logger.info(f"🛡️ ESCUDO ANTI-ECOS: Empleado escribió. Apagando bot para {sender_id}.")
                 conn.execute(text("UPDATE contacts SET bot_mode = False, last_activity = NOW() WHERE client_id = :uid"), {"uid": sender_id})
@@ -265,7 +254,6 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             if contacto and contacto.last_activity:
                 horas_inactivo = (datetime.now() - contacto.last_activity).total_seconds() / 3600
                 if horas_inactivo > 12:
-                    logger.info(f"🌅 Pasaron {horas_inactivo:.1f} horas. Reseteando bot para {sender_id}")
                     conn.execute(text("UPDATE contacts SET bot_mode = True WHERE client_id = :uid"), {"uid": sender_id})
                     conn.commit()
 
@@ -275,9 +263,8 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             """), {"cid": sender_id, "nom": nombre, "plat": platform})
             
             if datos.get('type') == 'audio' and datos.get('audio_url_meta'):
-                logger.info("🎤 Mensaje de Audio detectado. Iniciando transcripción...")
-                
-                audio_bytes = descargar_media_meta(datos['audio_url_meta'], META_TOKEN)
+                token_para_audio = WHATSAPP_TOKEN if platform == 'whatsapp' else META_TOKEN
+                audio_bytes = descargar_media_meta(datos['audio_url_meta'], token_para_audio)
                 
                 if audio_bytes:
                     with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
@@ -288,9 +275,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
                     except: pass
                     texto_usuario = texto_transcrito
                 else:
-                    texto_usuario = "(Audio vacío o error de descarga)"
-
-            logger.info(f"📨 {platform.upper()}: {nombre} ({sender_id}) - '{texto_usuario}'")
+                    texto_usuario = "(Audio vacío)"
 
             conn.execute(text("""
                 INSERT INTO messages (contact_id, message_text, media_url, media_type, direction, status, sender_type, created_at)
@@ -299,9 +284,7 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             conn.commit()
 
             estado_bot = conn.execute(text("SELECT bot_mode FROM contacts WHERE client_id = :uid"), {"uid": sender_id}).scalar()
-            if estado_bot is False:
-                logger.info(f"🤐 Bot APAGADO para {sender_id}. Bye.")
-                return 
+            if estado_bot is False: return 
 
             rows = conn.execute(text("SELECT sender_type, message_text FROM messages WHERE contact_id = :uid ORDER BY created_at DESC LIMIT 6"), {"uid": sender_id}).fetchall()
             historial = [{"role": "assistant" if r[0] in ['bot'] else "user", "content": r[1]} for r in reversed(rows)]
@@ -309,7 +292,6 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             prompt_final = texto_usuario
             notas_contexto = []
             if datos.get('ad_context'): notas_contexto.append(f"[SISTEMA: Viene de anuncio: '{datos['ad_context']}']")
-            if datos.get('type') == 'audio': notas_contexto.append("[SISTEMA: El usuario envió un audio. Respondé natural.]")
             if notas_contexto: prompt_final += " " + " ".join(notas_contexto)
 
             respuesta_ia = cerebro.procesar_mensaje(prompt_final, historial)
@@ -320,7 +302,6 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
 
             if texto_resp:
                 if necesita_humano:
-                    logger.info(f"🔄 HANDOFF: La IA detectó que se requiere un humano. Apagando bot para {sender_id}.")
                     conn.execute(text("UPDATE contacts SET bot_mode = False WHERE client_id = :uid"), {"uid": sender_id})
 
                 conn.execute(text("""
@@ -334,7 +315,6 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
     except Exception as e:
         logger.error(f"🔥 Error CRÍTICO en background task: {e}")
 
-# ENDPOINTS & JSON 
 class ORJSONResponseCustom(JSONResponse):
     media_type = "application/json"
     def render(self, content: Any) -> bytes:
@@ -348,7 +328,6 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
         background_tasks.add_task(procesar_mensaje_fondo, payload)
         return {"status": "ok"}
     except Exception as e:
-        logger.error(f"Error en recepción: {e}")
         return {"status": "error"} 
 
 @app.get("/webhook")
