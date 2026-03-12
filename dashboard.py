@@ -31,7 +31,7 @@ engine = create_engine(
     pool_recycle=1800
 )
 
-#  CSS (ESTILO WHATSAPP + FOTOS COMPACTAS)
+#  CSS (ESTILO WHATSAPP + FOTOS COMPACTAS)
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; }
@@ -49,7 +49,7 @@ st.markdown("""
         padding: 10px 14px; 
         border-radius: 10px; 
         margin-bottom: 8px; 
-        width: fit-content; /* CLAVE: Para que no ocupe todo el ancho */
+        width: fit-content; 
         max-width: 75%; 
         font-size: 15px; 
         line-height: 1.4;
@@ -132,15 +132,12 @@ def apagar_bot_por_terminacion(telefono_completo):
         conn.commit()
         return res.rowcount
 
-# CAMBIO: Función omnicanal con llaves separadas
 def enviar_mensaje_omnicanal(telefono, texto):
-    # Buscar plataforma en la BD
     s = str(telefono).replace("+", "").strip()
     patron = f"%{s[-7:]}" if len(s) > 7 else s
     with engine.connect() as conn:
         plataforma = conn.execute(text("SELECT platform FROM contacts WHERE client_id LIKE :pat LIMIT 1"), {"pat": patron}).scalar()
 
-    # 🔥 MAGIA: Elegir la llave correcta según la plataforma
     token_a_usar = WHATSAPP_TOKEN if plataforma == 'whatsapp' else META_TOKEN
     
     if not token_a_usar: 
@@ -150,7 +147,6 @@ def enviar_mensaje_omnicanal(telefono, texto):
     headers = {"Authorization": f"Bearer {token_a_usar}", "Content-Type": "application/json"}
     
     try:
-        # LÓGICA DE ENVÍO DEPENDIENDO LA PLATAFORMA
         if plataforma == 'whatsapp':
             dest_meta = s
             if dest_meta.startswith("549"): dest_meta = dest_meta.replace("549", "54", 1)
@@ -171,7 +167,7 @@ def enviar_mensaje_omnicanal(telefono, texto):
             with engine.connect() as conn:
                 conn.execute(text("INSERT INTO messages (contact_id, message_text, direction, status, intent, priority_score, created_at, sender_type) VALUES (:cel, :msg, 'outbound', 'sent_by_human', 'Human Reply', 0, NOW(), 'human')"), {"cel": telefono, "msg": texto})
                 conn.commit()
-            apagar_bot_por_terminacion(telefono) # Apaga la IA si habló el humano
+            apagar_bot_por_terminacion(telefono) 
             return True
         else:
             st.toast(f"❌ Error Meta: {res.text}")
@@ -196,15 +192,14 @@ def callback_switch_bot():
             st.toast("🤖 Bot PRENDIDO.")
     except Exception as e: st.error(f"Error Toggle: {e}")
 
-#  GESTIÓN DE VISTAS
+#  GESTIÓN DE VISTAS
 if 'selected_client' not in st.session_state: st.session_state.selected_client = None
 if 'view_category' not in st.session_state: st.session_state.view_category = "all"
 
 def ir_al_chat(cid): st.session_state.selected_client = cid
 def volver(): st.session_state.selected_client = None; st.rerun()
 
-#  COMPONENTES VIVOS (FRAGMENTS)
-
+#  COMPONENTES VIVOS (FRAGMENTS)
 @st.fragment(run_every=3)
 def bloque_mensajes(client_id):
     try:
@@ -229,13 +224,13 @@ def bloque_mensajes(client_id):
             st.info("📭 No hay mensajes aún.")
         return
 
-    #  CONSTRUCCIÓN DEL HTML  
+    #  CONSTRUCCIÓN DEL HTML  
     mensajes_html = ""
     for _, row in df.iterrows():
         hora_str = formatear_fecha(row['created_at'])
         d, s = row['direction'], row['status']
         
-        #Clases
+        # Clases
         if d == 'inbound': 
             cls = "user-bubble"
             ico = ""
@@ -249,17 +244,17 @@ def bloque_mensajes(client_id):
             ico = "🤖"
             flex_align = "flex-end"
         
-        # Visuales (FOTO CON TAMAÑO FORZADO 150px)
+        # Visuales 
         contenido_visual = ""
         if row.get('media_url') and row.get('media_type') == 'image':
             contenido_visual = f"""<a href="{row['media_url']}" target="_blank"><img src="{row['media_url']}" width="150" style="height: auto; border-radius: 8px; margin-bottom: 5px; cursor: pointer;"></a><br>"""
 
-        #  Audio
+        #  Audio
         icono_audio = ""
         if row.get('media_type') == 'audio':
             icono_audio = "🎤 <i>(Audio Transcrito):</i> "
         
-        #  Texto y Badges
+        #  Texto y Badges
         texto_limpio = str(row["message_text"]).replace("<", "&lt;").replace(">", "&gt;") 
         
         if "Viene del anuncio:" in texto_limpio:
@@ -269,12 +264,12 @@ def bloque_mensajes(client_id):
             else:
                 texto_limpio = f"""<div class="badge-ad">📢 PUBLICIDAD</div><br>{texto_limpio}"""
 
-        #  Intent
+        #  Intent
         extra_tag = ""
         if row['sender_type'] == 'bot' and row.get('intent'):
              extra_tag = f"""<br><span style='font-size:0.6rem; opacity:0.8;'>🧠 {row['intent']}</span>"""
 
-        #  HTML FINAL 
+        #  HTML FINAL 
         mensajes_html += f"""<div style="display:flex; justify-content:{flex_align}; width:100%; margin-bottom: 8px;"><div class="chat-bubble {cls}">{contenido_visual}<div>{icono_audio}{texto_limpio}</div>{extra_tag}<span class="meta-info">{ico} {hora_str}</span></div></div>"""
 
     unique_id = "chat-box-monolith"
@@ -360,7 +355,7 @@ def bloque_tablero():
             lbl = f"{r['client_id']} | {r['message_text']}"
             if st.button(lbl, key=f"list_{r['client_id']}"): ir_al_chat(r['client_id']); st.rerun()
 
-#  SIDEBAR (AUTO-REFRESH FIX) 
+#  SIDEBAR (AUTO-REFRESH FIX) 
 @st.fragment(run_every=5)
 def render_sidebar():
     # Título y Botón Home
@@ -434,14 +429,16 @@ if st.session_state.selected_client:
         )
 
     st.divider()
-    bloque_mensajes(client_id)
-    
+
+    # 🔥 MAGIA VISUAL: Capturamos texto primero para que renderice instantáneo 
     texto = st.chat_input(f"Escribí tu respuesta para {client_id}...")
     
     if texto:
         if enviar_mensaje_omnicanal(client_id, texto): 
             st.session_state['force_off_next_run'] = client_id
             st.rerun()
+            
+    bloque_mensajes(client_id)
 
 else:
     # Inbox

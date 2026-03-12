@@ -234,20 +234,22 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             return
 
         with engine.connect() as conn:
+            # 🔥 ESCUDO ANTI-DUPLICADOS Y ECOS MEJORADO
             if datos.get('is_echo') == True:
-                if datos.get('app_id'):
-                    logger.info("🤖 Eco del bot detectado (por app_id). Ignorando.")
-                    return
+                # 1. Ignorar ecos automáticos de aplicaciones conectadas
+                if datos.get('app_id'): return
                 
-                ultimo_mensaje_bot = conn.execute(text(
-                    "SELECT message_text FROM messages WHERE contact_id = :uid AND sender_type = 'bot' ORDER BY created_at DESC LIMIT 1"
+                # 2. Frena bot y mensajes repetidos del dashboard
+                ultimo_mensaje = conn.execute(text(
+                    "SELECT message_text FROM messages WHERE contact_id = :uid AND direction = 'outbound' ORDER BY created_at DESC LIMIT 1"
                 ), {"uid": sender_id}).scalar()
 
-                if ultimo_mensaje_bot and ultimo_mensaje_bot.strip() == texto_usuario:
-                    logger.info("🤖 Eco del bot detectado (por texto exacto). Ignorando para no duplicar.")
+                if ultimo_mensaje and ultimo_mensaje.strip() == texto_usuario:
+                    logger.info("🤖 Eco duplicado detectado. Ignorando para no ensuciar la base de datos.")
                     return
                 
-                logger.info(f"🛡️ ESCUDO ANTI-ECOS: Empleado escribió. Apagando bot para {sender_id}.")
+                # 3. Si llega acá, escribiste directo desde la app de Meta/Instagram
+                logger.info(f"🛡️ ESCUDO: Empleado escribió desde Meta. Apagando bot para {sender_id}.")
                 conn.execute(text("UPDATE contacts SET bot_mode = False, last_activity = NOW() WHERE client_id = :uid"), {"uid": sender_id})
                 conn.execute(text("""
                     INSERT INTO messages (contact_id, message_text, direction, status, sender_type, created_at)
