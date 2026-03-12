@@ -26,8 +26,7 @@ app = FastAPI()
 
 # Variables de entorno 
 DB_URL = os.getenv("DATABASE_URL")
-META_TOKEN = os.getenv("META_TOKEN") 
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN") # Llave Maestra para WhatsApp
+META_TOKEN = os.getenv("META_TOKEN") # SÚPER LLAVE ÚNICA PARA IG, FB Y WSP
 META_PHONE_ID = os.getenv("META_PHONE_ID")
 META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN", "nebitel_token_secreto")
 CLOUDINARY_URL = os.getenv("CLOUDINARY_URL")
@@ -78,7 +77,7 @@ def subir_a_cloudinary(contenido_bytes, recurso_tipo="image") -> Optional[str]:
 def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
     datos = {}
     try:
-        object_type = payload.get('object') # Detectamos si el origen es 'instagram' o 'page'
+        object_type = payload.get('object') 
         entry = payload.get('entry', [])[0]
         
         # WHATSAPP
@@ -105,10 +104,10 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
                 datos['media_url'] = None
             elif msg_type == 'image':
                 media_id = mensaje['image']['id']
-                req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"})
+                req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {META_TOKEN}"})
                 if req.status_code == 200:
                     url_temp = req.json().get('url')
-                    contenido = descargar_media_meta(url_temp, WHATSAPP_TOKEN)
+                    contenido = descargar_media_meta(url_temp, META_TOKEN)
                     datos['media_url'] = subir_a_cloudinary(contenido, "image")
                     datos['text'] = mensaje['image'].get('caption', '(Foto enviada)')
                     datos['media_type'] = 'image'
@@ -116,7 +115,7 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
                     datos['text'] = "(Error Foto)"
             elif msg_type == 'audio':
                 media_id = mensaje['audio']['id']
-                req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"})
+                req = requests.get(f"https://graph.facebook.com/v21.0/{media_id}", headers={"Authorization": f"Bearer {META_TOKEN}"})
                 if req.status_code == 200:
                     datos['audio_url_meta'] = req.json().get('url') 
                     datos['text'] = "(Audio recibiendo...)" 
@@ -129,7 +128,6 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
             event = entry['messaging'][0]
             if 'message' not in event: return None
 
-            # Diferenciamos la plataforma según el object_type
             if object_type == 'instagram':
                 datos['platform'] = 'instagram'
                 datos['name'] = "Usuario Instagram"
@@ -140,14 +138,12 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
             datos['sender_id'] = event['sender']['id']
             message = event['message']
             
-            # ESCUDO ANTI-ECOS: Detecta si lo mandó un humano de la empresa
             if message.get('is_echo') == True:
                 datos['is_echo'] = True
-                # Si es un eco, el cliente es el que RECIBE (recipient), no el que envía
                 datos['sender_id'] = event['recipient']['id'] 
                 datos['text'] = message.get('text', '(Mensaje de empleado)')
                 datos['app_id'] = message.get('app_id')
-                return datos # Retorna rápido para cortar ejecución
+                return datos 
             else:
                 datos['is_echo'] = False
 
@@ -179,14 +175,12 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
 
 # FUNCIÓN PARA ENVIAR 
 def enviar_respuesta_meta(destinatario_id, texto, plataforma):
-    # 🔥 Elige la llave según la plataforma
-    token_a_usar = WHATSAPP_TOKEN if plataforma == 'whatsapp' else META_TOKEN
-
-    if not token_a_usar: 
-        logger.error(f"❌ Error: No hay token configurado para {plataforma}.")
+    # 🔥 Ahora usamos siempre la Súper Llave (META_TOKEN)
+    if not META_TOKEN: 
+        logger.error(f"❌ Error: No hay token configurado en META_TOKEN.")
         return
 
-    headers = {"Authorization": f"Bearer {token_a_usar}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {META_TOKEN}", "Content-Type": "application/json"}
     
     try:
         # CASO A: WHATSAPP 
@@ -205,17 +199,8 @@ def enviar_respuesta_meta(destinatario_id, texto, plataforma):
                 "text": {"body": texto}
             }
 
-        # CASO B: INSTAGRAM 
-        elif plataforma == 'instagram':
-            url = "https://graph.facebook.com/v21.0/me/messages"
-            payload = {
-                "recipient": {"id": destinatario_id},
-                "message": {"text": texto},
-                "messaging_type": "RESPONSE"
-            }
-
-        # CASO C: FACEBOOK MESSENGER 
-        elif plataforma == 'facebook':
+        # CASO B Y C: INSTAGRAM / FACEBOOK
+        elif plataforma in ['instagram', 'facebook']:
             url = "https://graph.facebook.com/v21.0/me/messages"
             payload = {
                 "recipient": {"id": destinatario_id},
@@ -227,7 +212,7 @@ def enviar_respuesta_meta(destinatario_id, texto, plataforma):
             logger.error(f"❌ Plataforma desconocida: {plataforma}")
             return
 
-        #  DISPARO A META 
+        #  DISPARO A META 
         res = requests.post(url, headers=headers, json=payload, timeout=15)
         
         if res.status_code == 200:
@@ -249,22 +234,16 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
         nombre = datos.get('name', 'Desconocido')
         texto_usuario = datos.get('text', '').strip()
 
-        # ESCUDO ANTI-VACÍOS: Si envían un sticker/vacío, no molestamos a la IA
         if not texto_usuario and not datos.get('is_echo'):
             logger.info(f"😶 Mensaje vacío/sticker de {platform} ({sender_id}). Ignorado.")
             return
 
         with engine.connect() as conn:
-            
-            # ESCUDO ANTI-ECOS: Freno de mano si escribió el empleado
             if datos.get('is_echo') == True:
-                
-                # PLAN A: Control por firma de la App (Si Meta se digna a mandarla)
                 if datos.get('app_id'):
                     logger.info("🤖 Eco del bot detectado (por app_id). Ignorando.")
                     return
                 
-                # PLAN B (ANTIBALAS): Control por texto exacto
                 ultimo_mensaje_bot = conn.execute(text(
                     "SELECT message_text FROM messages WHERE contact_id = :uid AND sender_type = 'bot' ORDER BY created_at DESC LIMIT 1"
                 ), {"uid": sender_id}).scalar()
@@ -273,7 +252,6 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
                     logger.info("🤖 Eco del bot detectado (por texto exacto). Ignorando para no duplicar.")
                     return
                 
-                # Si no tiene app_id y el texto NO coincide... ¡entonces sí fue un humano desde el celu!
                 logger.info(f"🛡️ ESCUDO ANTI-ECOS: Empleado escribió. Apagando bot para {sender_id}.")
                 conn.execute(text("UPDATE contacts SET bot_mode = False, last_activity = NOW() WHERE client_id = :uid"), {"uid": sender_id})
                 conn.execute(text("""
@@ -283,7 +261,6 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
                 conn.commit()
                 return 
 
-            # RESETEO DE 12 HORAS (Session Timeout)
             contacto = conn.execute(text("SELECT bot_mode, last_activity FROM contacts WHERE client_id = :uid"), {"uid": sender_id}).fetchone()
             if contacto and contacto.last_activity:
                 horas_inactivo = (datetime.now() - contacto.last_activity).total_seconds() / 3600
@@ -292,18 +269,15 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
                     conn.execute(text("UPDATE contacts SET bot_mode = True WHERE client_id = :uid"), {"uid": sender_id})
                     conn.commit()
 
-            # Guardar usuario y actualizar última actividad
             conn.execute(text("""
                 INSERT INTO contacts (client_id, name, platform) VALUES (:cid, :nom, :plat) 
                 ON CONFLICT (client_id) DO UPDATE SET last_activity = NOW(), name = :nom
             """), {"cid": sender_id, "nom": nombre, "plat": platform})
             
-            # LÓGICA DE AUDIO (WHISPER)
             if datos.get('type') == 'audio' and datos.get('audio_url_meta'):
                 logger.info("🎤 Mensaje de Audio detectado. Iniciando transcripción...")
                 
-                token_para_audio = WHATSAPP_TOKEN if platform == 'whatsapp' else META_TOKEN
-                audio_bytes = descargar_media_meta(datos['audio_url_meta'], token_para_audio)
+                audio_bytes = descargar_media_meta(datos['audio_url_meta'], META_TOKEN)
                 
                 if audio_bytes:
                     with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
@@ -318,20 +292,17 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
 
             logger.info(f"📨 {platform.upper()}: {nombre} ({sender_id}) - '{texto_usuario}'")
 
-            # Guardar mensaje entrante
             conn.execute(text("""
                 INSERT INTO messages (contact_id, message_text, media_url, media_type, direction, status, sender_type, created_at)
                 VALUES (:cid, :txt, :url, :mtype, 'inbound', 'received', 'user', NOW())
             """), {"cid": sender_id, "txt": texto_usuario, "url": datos.get('media_url'), "mtype": datos.get('media_type')})
             conn.commit()
 
-            # Comprobar si el bot está prendido
             estado_bot = conn.execute(text("SELECT bot_mode FROM contacts WHERE client_id = :uid"), {"uid": sender_id}).scalar()
             if estado_bot is False:
                 logger.info(f"🤐 Bot APAGADO para {sender_id}. Bye.")
                 return 
 
-            # CEREBRO IA 
             rows = conn.execute(text("SELECT sender_type, message_text FROM messages WHERE contact_id = :uid ORDER BY created_at DESC LIMIT 6"), {"uid": sender_id}).fetchall()
             historial = [{"role": "assistant" if r[0] in ['bot'] else "user", "content": r[1]} for r in reversed(rows)]
             
@@ -345,10 +316,9 @@ def procesar_mensaje_fondo(payload: Dict[Any, Any]):
             texto_resp = respuesta_ia.get('respuesta', '')
             intencion = respuesta_ia.get('intencion', 'General')
             prio = respuesta_ia.get('prioridad', 5)
-            necesita_humano = respuesta_ia.get('necesita_humano', False) # Atrapamos la bandera
+            necesita_humano = respuesta_ia.get('necesita_humano', False)
 
             if texto_resp:
-                # AUTO-APAGADO (Handoff desde la IA)
                 if necesita_humano:
                     logger.info(f"🔄 HANDOFF: La IA detectó que se requiere un humano. Apagando bot para {sender_id}.")
                     conn.execute(text("UPDATE contacts SET bot_mode = False WHERE client_id = :uid"), {"uid": sender_id})
