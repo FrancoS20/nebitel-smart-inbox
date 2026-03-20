@@ -152,20 +152,36 @@ def normalizar_evento(payload: Dict[Any, Any]) -> Optional[Dict]:
             else:
                  datos['ad_context'] = None
 
-            if 'text' in message:
-                datos['text'] = message['text']
+            # --- LÓGICA DE HISTORIAS Y ADJUNTOS ACTUALIZADA ---
+            texto_base = message.get('text', '').strip()
+
+            # 1. Atajamos si es una respuesta a una Historia
+            if 'reply_to' in message and 'story' in message['reply_to']:
+                story_url = message['reply_to']['story'].get('url', 'URL_Historia_Oculta')
+                datos['text'] = f"[Respondió a historia: {story_url}] {texto_base}".strip()
                 datos['type'] = 'text'
+                
+            # 2. Atajamos fotos/audios o links raros
             elif 'attachments' in message:
                 att = message['attachments'][0]
-                if att['type'] == 'image':
+                if 'story_url' in att:
+                    datos['text'] = f"[Respondió a historia: {att['story_url']}] {texto_base}".strip()
+                    datos['type'] = 'text'
+                elif att['type'] == 'image':
                     url_temp = att['payload']['url']
                     contenido = requests.get(url_temp).content
                     datos['media_url'] = subir_a_cloudinary(contenido, "image")
-                    datos['text'] = "(Foto)"
+                    datos['text'] = texto_base if texto_base else "(Foto)"
                     datos['type'] = 'image'
                     datos['media_type'] = 'image'
                 elif att['type'] == 'audio':
                      datos['text'] = "(Audio de IG/FB - No soportado aún)"
+                     datos['type'] = 'audio'
+                     
+            # 3. Texto normal
+            elif texto_base:
+                datos['text'] = texto_base
+                datos['type'] = 'text'
 
         return datos if 'sender_id' in datos else None
 
