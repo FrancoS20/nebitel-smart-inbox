@@ -310,18 +310,42 @@ def bloque_tablero():
                 ORDER BY m.created_at DESC LIMIT 50;
             """
             df = pd.read_sql(text(sql), conn)
-            if not df.empty: df = normalizar_hora(df, 'created_at')
+            if not df.empty: 
+                df = normalizar_hora(df, 'created_at')
     except: df = pd.DataFrame()
 
     if df.empty:
         st.info("Sin mensajes recientes.")
         return
 
+    # --- INICIO MAGIA DE PRIORIDAD DINÁMICA (SLA) ---
+    ahora_arg = pd.Timestamp.now(tz='America/Argentina/Buenos_Aires')
+    df['minutos_espera'] = (ahora_arg - df['created_at']).dt.total_seconds() / 60
+    
+    # Rellenamos nulos por las dudas
+    df['priority_score'] = df['priority_score'].fillna(0)
+
+    # Fórmula: Suma puntos por tiempo solo si la prioridad original es mayor a 2
+    df['score_dinamico'] = df.apply(
+        lambda row: row['priority_score'] + (row['minutos_espera'] * 0.1) if row['priority_score'] > 2 else row['priority_score'], 
+        axis=1
+    )
+    
+    # Ordenamos el tablero usando el nuevo super-score
+    df = df.sort_values(by=['score_dinamico', 'created_at'], ascending=[False, True])
+    # --- FIN MAGIA DE PRIORIDAD ---
+
+    # Clasificador Pulido (Alineado 100% con el SYSTEM_PROMPT)
     def clasificar(r):
-        intent = str(r['intent'])
-        prio = r['priority_score'] if r['priority_score'] else 0
-        if intent in ['Venta','Precio','Stock','Compra'] or prio >= 8: return 'ventas'
-        elif intent in ['Tecnico','Reparación','Falla','Soporte']: return 'tecnico'
+        intent = str(r['intent']).strip()
+        # Mapeo directo de las 3 opciones del LLM
+        if intent == 'Venta': return 'ventas'
+        if intent == 'Tecnico': return 'tecnico'
+        if intent == 'General': return 'varios'
+        
+        # Red de seguridad por si Llama-3 inventa una palabra (no debería pasar con el nuevo prompt)
+        if intent in ['Precio','Stock','Compra'] or r['score_dinamico'] >= 9: return 'ventas'
+        if intent in ['Reparación','Falla','Soporte']: return 'tecnico'
         return 'varios'
 
     df['cat'] = df.apply(clasificar, axis=1)
@@ -344,7 +368,9 @@ def bloque_tablero():
                     bot_icon = "🟢" if r['bot_mode'] else "🔴"
                     
                     texto_preview = str(r['message_text'])[:40] + "..." if len(str(r['message_text'])) > 40 else str(r['message_text'])
-                    lbl = f"{p_icon} | **{r['client_id']}** {bot_icon}\n\n_{texto_preview}_\n\n🕒 {h}"
+                    
+                    # Ahora el botón muestra el Score Dinámico en corchetes para que veas cómo sube
+                    lbl = f"{p_icon} [{int(r['score_dinamico'])}] **{r['client_id']}** {bot_icon}\n\n_{texto_preview}_\n\n🕒 {h}"
 
                     if st.button(lbl, key=f"card_{r['client_id']}"):
                         ir_al_chat(r['client_id']); st.rerun()
@@ -352,7 +378,7 @@ def bloque_tablero():
         st.subheader(f"📂 {vista.upper()}")
         df_show = df[df['cat'] == vista]
         for _, r in df_show.iterrows():
-            lbl = f"{r['client_id']} | {r['message_text']}"
+            lbl = f"[{int(r['score_dinamico'])}] {r['client_id']} | {r['message_text']}"
             if st.button(lbl, key=f"list_{r['client_id']}"): ir_al_chat(r['client_id']); st.rerun()
 
 #  SIDEBAR (AUTO-REFRESH FIX) 
@@ -381,7 +407,7 @@ def render_sidebar():
     
     if not df_side.empty:
         for _, row in df_side.iterrows():
-            puntaje = int(row['prio']) if row['prio'] else 0
+            puntaje = int(row['prio']) if pd.notnull(row['prio']) else 0
             
             if puntaje >= 8: icon = "🔥"
             elif not row['bot_mode']: icon = "🔴"
