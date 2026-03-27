@@ -367,5 +367,9 @@ async def verify_webhook(request: Request):
         return int(request.query_params.get("hub.challenge"))
     raise HTTPException(status_code=403)
 
+@app.get("/")
+async def health_check():
+    return {"status": "estoy_despierto"}
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
