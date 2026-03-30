@@ -12,7 +12,41 @@ from dotenv import load_dotenv
 # CONFIGURACIÓN 
 st.set_page_config(page_title="Nebitel CRM", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
 
+# CARGAR VARIABLES DE ENTORNO (Debe ir antes del login para poder leer la contraseña)
 load_dotenv()
+
+# 👇 --- INICIO SISTEMA DE LOGIN --- 👇
+if 'logeado' not in st.session_state:
+    st.session_state.logeado = False
+
+if not st.session_state.logeado:
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.write("") 
+        st.write("") 
+        st.title("🔒 Acceso Interno")
+        st.info("Panel exclusivo para personal de Nebitel y revisión de Meta API.")
+        
+        password_input = st.text_input("Ingrese la contraseña de acceso", type="password")
+        
+        # Lee la clave de Streamlit Secrets o usa la de por defecto
+        MASTER_PASSWORD = os.getenv("PASSWORD_PANEL", "Nebitel2026!")
+        
+        if st.button("Ingresar al CRM", type="primary", use_container_width=True):
+            if password_input == MASTER_PASSWORD:
+                st.session_state.logeado = True
+                st.success("Acceso concedido. Cargando...")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Contraseña incorrecta. Inténtelo de nuevo.")
+                
+    st.stop() # Frena la carga del resto de la página si no pusieron la clave
+# 👆 --- FIN SISTEMA DE LOGIN --- 👆
+
+
+# --- A PARTIR DE ACÁ ES EXACTAMENTE TU CÓDIGO ORIGINAL ---
+
 DB_URL = os.getenv("DATABASE_URL")
 META_TOKEN = os.getenv("META_TOKEN")         # Llave del Local (Para Instagram)
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN") # Súper Llave del Edificio (Para WhatsApp)
