@@ -38,7 +38,7 @@ if not st.session_state.logeado:
             f"https://www.facebook.com/v20.0/dialog/oauth?"
             f"client_id={APP_ID}&"
             f"redirect_uri={REDIRECT_URI}&"
-            f"scope=pages_messaging,human_agent,pages_show_list,public_profile"
+            f"scope=pages_messaging,pages_show_list,public_profile"
         )
         
         st.markdown(f'''
