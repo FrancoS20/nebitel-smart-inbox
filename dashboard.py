@@ -15,9 +15,17 @@ st.set_page_config(page_title="Nebitel CRM", page_icon="🦅", layout="wide", in
 # CARGAR VARIABLES DE ENTORNO (Debe ir antes del login para poder leer la contraseña)
 load_dotenv()
 
+# --- DATOS DE META PARA EL REVISOR ---
+APP_ID = "1150423273840388" 
+REDIRECT_URI = "https://nebitel.streamlit.app/" # Asegurate que sea la URL exacta de tu Streamlit
+
 # 👇 --- INICIO SISTEMA DE LOGIN --- 👇
 if 'logeado' not in st.session_state:
     st.session_state.logeado = False
+
+# El "ticket" que devuelve Meta si el revisor hace click en el botón azul
+if "code" in st.query_params:
+    st.session_state.logeado = True
 
 if not st.session_state.logeado:
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -25,8 +33,39 @@ if not st.session_state.logeado:
         st.write("") 
         st.write("") 
         st.title("🔒 Acceso Interno")
-        st.info("Panel exclusivo para personal de Nebitel y revisión de Meta API.")
+        st.info("Para auditar el cumplimiento de Meta (Apartado 7.a) y el permiso 'human_agent', inicie sesión con Facebook.")
         
+        # --- BOTÓN DE FACEBOOK PARA EL REVISOR ---
+        auth_url = (
+            f"https://www.facebook.com/v20.0/dialog/oauth?"
+            f"client_id={APP_ID}&"
+            f"redirect_uri={REDIRECT_URI}&"
+            f"scope=pages_messaging,human_agent,pages_show_list,public_profile"
+        )
+        
+        st.markdown(f'''
+            <a href="{auth_url}" target="_self">
+                <button style="
+                    background-color: #1877F2; 
+                    color: white; 
+                    border: none; 
+                    padding: 12px 24px; 
+                    border-radius: 6px; 
+                    cursor: pointer; 
+                    font-size: 16px; 
+                    font-weight: bold;
+                    width: 100%;
+                    margin-bottom: 20px;
+                ">
+                    Continuar con Facebook
+                </button>
+            </a>
+        ''', unsafe_allow_html=True)
+        
+        st.divider()
+        st.caption("Acceso alternativo (Personal de Nebitel):")
+
+        # --- TU SISTEMA DE CONTRASEÑA ORIGINAL PARA VOS ---
         password_input = st.text_input("Ingrese la contraseña de acceso", type="password")
         
         # Lee la clave de Streamlit Secrets o usa la de por defecto
@@ -41,7 +80,7 @@ if not st.session_state.logeado:
             else:
                 st.error("Contraseña incorrecta. Inténtelo de nuevo.")
                 
-    st.stop() # Frena la carga del resto de la página si no pusieron la clave
+    st.stop() # Frena la carga del resto de la página si no pusieron la clave ni se loguearon
 # 👆 --- FIN SISTEMA DE LOGIN --- 👆
 
 
