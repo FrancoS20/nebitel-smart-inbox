@@ -12,18 +12,16 @@ from dotenv import load_dotenv
 # CONFIGURACIÓN 
 st.set_page_config(page_title="Nebitel CRM", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
 
-# CARGAR VARIABLES DE ENTORNO (Debe ir antes del login para poder leer la contraseña)
 load_dotenv()
 
-# --- DATOS DE META PARA EL REVISOR ---
+# DATOS DE META PARA EL REVISOR 
 APP_ID = "1150423273840388" 
-REDIRECT_URI = "https://nebitel.streamlit.app/" # Asegurate que sea la URL exacta de tu Streamlit
+REDIRECT_URI = "https://nebitel-smart-inbox-b7xr2f42bdrvyvpdmpgrew.streamlit.app/" 
 
 # 👇 --- INICIO SISTEMA DE LOGIN --- 👇
 if 'logeado' not in st.session_state:
     st.session_state.logeado = False
 
-# El "ticket" que devuelve Meta si el revisor hace click en el botón azul
 if "code" in st.query_params:
     st.session_state.logeado = True
 
@@ -65,7 +63,7 @@ if not st.session_state.logeado:
         st.divider()
         st.caption("Acceso alternativo (Personal de Nebitel):")
 
-        # --- TU SISTEMA DE CONTRASEÑA ORIGINAL PARA VOS ---
+       
         password_input = st.text_input("Ingrese la contraseña de acceso", type="password")
         
         # Lee la clave de Streamlit Secrets o usa la de por defecto
@@ -81,10 +79,9 @@ if not st.session_state.logeado:
                 st.error("Contraseña incorrecta. Inténtelo de nuevo.")
                 
     st.stop() # Frena la carga del resto de la página si no pusieron la clave ni se loguearon
-# 👆 --- FIN SISTEMA DE LOGIN --- 👆
 
 
-# --- A PARTIR DE ACÁ ES EXACTAMENTE TU CÓDIGO ORIGINAL ---
+
 
 DB_URL = os.getenv("DATABASE_URL")
 META_TOKEN = os.getenv("META_TOKEN")         # Llave del Local (Para Instagram)
@@ -391,7 +388,6 @@ def bloque_tablero():
         st.info("Sin mensajes recientes.")
         return
 
-    # --- INICIO MAGIA DE PRIORIDAD DINÁMICA (SLA) ---
     ahora_arg = pd.Timestamp.now(tz='America/Argentina/Buenos_Aires')
     df['minutos_espera'] = (ahora_arg - df['created_at']).dt.total_seconds() / 60
     
@@ -404,11 +400,10 @@ def bloque_tablero():
         axis=1
     )
     
-    # Ordenamos el tablero usando el nuevo super-score
     df = df.sort_values(by=['score_dinamico', 'created_at'], ascending=[False, True])
-    # --- FIN MAGIA DE PRIORIDAD ---
+    
 
-    # Clasificador Pulido (Alineado 100% con el SYSTEM_PROMPT)
+   
     def clasificar(r):
         intent = str(r['intent']).strip()
         # Mapeo directo de las 3 opciones del LLM
@@ -416,7 +411,7 @@ def bloque_tablero():
         if intent == 'Tecnico': return 'tecnico'
         if intent == 'General': return 'varios'
         
-        # Red de seguridad por si Llama-3 inventa una palabra (no debería pasar con el nuevo prompt)
+        
         if intent in ['Precio','Stock','Compra'] or r['score_dinamico'] >= 9: return 'ventas'
         if intent in ['Reparación','Falla','Soporte']: return 'tecnico'
         return 'varios'
@@ -442,7 +437,7 @@ def bloque_tablero():
                     
                     texto_preview = str(r['message_text'])[:40] + "..." if len(str(r['message_text'])) > 40 else str(r['message_text'])
                     
-                    # Ahora el botón muestra el Score Dinámico en corchetes para que veas cómo sube
+                    
                     lbl = f"{p_icon} [{int(r['score_dinamico'])}] **{r['client_id']}** {bot_icon}\n\n_{texto_preview}_\n\n🕒 {h}"
 
                     if st.button(lbl, key=f"card_{r['client_id']}"):
@@ -454,7 +449,7 @@ def bloque_tablero():
             lbl = f"[{int(r['score_dinamico'])}] {r['client_id']} | {r['message_text']}"
             if st.button(lbl, key=f"list_{r['client_id']}"): ir_al_chat(r['client_id']); st.rerun()
 
-#  SIDEBAR (AUTO-REFRESH FIX) 
+#  SIDEBAR 
 @st.fragment(run_every=5)
 def render_sidebar():
     # Título y Botón Home
@@ -529,7 +524,7 @@ if st.session_state.selected_client:
 
     st.divider()
 
-    # 🔥 MAGIA VISUAL: Capturamos texto primero para que renderice instantáneo 
+    #   Capturamos texto primero para que renderice instantáneo 
     texto = st.chat_input(f"Escribí tu respuesta para {client_id}...")
     
     if texto:
