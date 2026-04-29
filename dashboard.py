@@ -42,7 +42,7 @@ if not st.session_state.logeado:
         )
         
         st.markdown(f'''
-            <a href="{auth_url}" target="_top">
+            <a href="{auth_url}" target="_blank">
                 <button style="
                     background-color: #1877F2; 
                     color: white; 
